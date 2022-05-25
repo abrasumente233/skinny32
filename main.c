@@ -10,11 +10,14 @@
 #include <block.h>
 #include <skinny.h>
 
+void test_ls();
+
 int main() {
     init_block_device();
 
     fat32 fs;
     init_fs(&fs);
 
+    test_ls();
     return 0;
 }

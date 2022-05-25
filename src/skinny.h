@@ -68,10 +68,10 @@ typedef struct __attribute__((__packed__)) fat32_dirent {
     u16  crt_time;
     u16  crt_date;
     u16  last_acc_date;
-    u16  fst_clus_hi;
+    u16  fat_clus_hi;
     u16  wrt_time;
     u16  wrt_date;
-    u16  fst_clus_lo;
+    u16  fat_clus_lo;
     u32  file_size;
 } fat32_dirent;
 
@@ -92,3 +92,22 @@ typedef struct linux_dirent64 {
 
 void init_fs(fat32 *fs);
 isize getdents(int fd, void *dirp, usize count);
+
+
+// Simplified inode
+typedef struct inode {
+    u32 inum;
+} inode;
+
+typedef void (*scan_fn)(u32 clus_no, u32 offset, fat32_dirent *dirent, void *res);
+
+typedef u32 fat_entry;
+
+// fat entry special values
+#define FE_FREE    0x00000000
+#define FE_RESERVE 0x00000001
+#define FE_BAD     0x0ffffff7
+#define FE_EOC     0x0ffffff8 // FIXME: There's more than one EOC
+
+// Shot, I miss Rust so much.
+// C's type system is so underpowered.

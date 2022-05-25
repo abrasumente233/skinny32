@@ -7,16 +7,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <block.c>
-
+#include <block.h>
+#include <skinny.h>
 
 int main() {
     init_block_device();
 
-    char buf[BSIZE];
-    bread(buf, 0, 1);
-
-    printf("%x\n", buf[0] & 0xff);
+    fat32 fs;
+    init_fs(&fs);
 
     return 0;
 }

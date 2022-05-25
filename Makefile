@@ -2,8 +2,8 @@
 run: main
 	./main
 
-main: main.c
-	gcc -Isrc -o main main.c
+main: main.c src/block.h src/block.c src/skinny.c src/skinny.h
+	gcc -Isrc -o main main.c src/skinny.c src/block.c
 
 .PHONY: clean
 clean:

@@ -7,7 +7,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define BSIZE 512
+#include <block.h>
 
 static void *drive;
 

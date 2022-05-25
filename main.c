@@ -11,6 +11,7 @@
 #include <skinny.h>
 
 void test_ls();
+void test_open();
 
 int main() {
     init_block_device();
@@ -19,5 +20,6 @@ int main() {
     init_fs(&fs);
 
     test_ls();
+    test_open();
     return 0;
 }

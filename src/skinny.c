@@ -1,7 +1,7 @@
 #include <assert.h>
-#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <block.h>
 #include <skinny.h>
@@ -16,17 +16,17 @@ static void read_bpb(fat32 *fs) {
     // @TODO: Support more valid FAT32 images.
 
     // @NOTE: Assume little endian loads here.
-    assert(bpb->jmp_boot[0]   == 0xeb);
+    assert(bpb->jmp_boot[0] == 0xeb);
     assert(bpb->bytes_per_sec == 512);
-    assert(bpb->num_fats      == 2);
-    assert(bpb->root_ent_cnt  == 0);
-    assert(bpb->tot_sec_16    == 0);
-    assert(bpb->media         == 0xf8);
-    assert(bpb->fat_sz_16     == 0);
-    assert(bpb->fs_ver        == 0);
-    assert(bpb->root_clus     == 2);
-    assert(bpb->fs_info       == 1);
-    assert(bpb->bk_boot_sec   == 6);
+    assert(bpb->num_fats == 2);
+    assert(bpb->root_ent_cnt == 0);
+    assert(bpb->tot_sec_16 == 0);
+    assert(bpb->media == 0xf8);
+    assert(bpb->fat_sz_16 == 0);
+    assert(bpb->fs_ver == 0);
+    assert(bpb->root_clus == 2);
+    assert(bpb->fs_info == 1);
+    assert(bpb->bk_boot_sec == 6);
     assert(bpb->sec_per_clus == 1);
 
     // @TODO: Make some assertions about the drive/vol numbers.
@@ -49,7 +49,8 @@ void init_fs(fat32 *fs) {
     printf("FAT size: %d sectors\n", bpb->fat_sz_32);
     printf("Root cluster: %d\n", bpb->root_clus);
     printf("FAT 1 offset: 0x%x bytes\n", 512 * bpb->rsvd_sec_cnt);
-    printf("FAT 2 offset: 0x%x bytes\n", 512 * (bpb->rsvd_sec_cnt + bpb->fat_sz_32));
+    printf("FAT 2 offset: 0x%x bytes\n",
+           512 * (bpb->rsvd_sec_cnt + bpb->fat_sz_32));
     printf("Root directory offset: 0x%x bytes\n", 512 * fs->rootdir_base_sec);
 
     printf("sizeof(fat32_dirent) = %lu\n", sizeof(fat32_dirent));
@@ -57,17 +58,10 @@ void init_fs(fat32 *fs) {
     printf("FAT32 setup successfully\n");
 }
 
-
-
-
 // Plug in your OS's favorite allocation scheme here.
-static inode *ialloc() {
-    return malloc(sizeof(inode));
-}
+static inode *ialloc() { return malloc(sizeof(inode)); }
 
-static void idalloc(inode *in) {
-    free(in);
-}
+static void idalloc(inode *in) { free(in); }
 
 // We alloc an inode everytime we get,
 // but in reality we should check if
@@ -87,7 +81,7 @@ static inode *iget(u32 dev, u32 inum) {
 // I will provide this lazy function for getting
 // the root dir inode, whose inum is, oh wait...
 // root dir doesn't have a dir entry.
-// 
+//
 // and when we want to search thourgh a dir's dir entries,
 // we want to know the data region of that dir.
 //
@@ -99,19 +93,19 @@ static inode *iget(u32 dev, u32 inum) {
 //
 // but root dir does not have a directory entry.
 // how do we find its data region if it doesn't have a dir entry?
-// oh the superblock told us, so we can define inum=0 to be root 
+// oh the superblock told us, so we can define inum=0 to be root
 // entry, and provide a helper function to convert inum to first
 // data cluster number.
 //
 // all we do is to specially handle it.
-static inode *get_root_inode() {
-    return iget(0, /* inum */ 0);
-}
+static inode *get_root_inode() { return iget(0, /* inum */ 0); }
 
-#define CLUS2SEC(_CLUS_NO, _CLUS_OFF, _SEC_NO, _SEC_OFF) do {\
-    _SEC_NO = ff->rootdir_base_sec + (_CLUS_NO - 2) * ff->bpb.sec_per_clus + _CLUS_OFF / BSIZE;\
-    _SEC_OFF = _CLUS_OFF % BSIZE;\
-} while (0)
+#define CLUS2SEC(_CLUS_NO, _CLUS_OFF, _SEC_NO, _SEC_OFF)                       \
+    do {                                                                       \
+        _SEC_NO = ff->rootdir_base_sec +                                       \
+                  (_CLUS_NO - 2) * ff->bpb.sec_per_clus + _CLUS_OFF / BSIZE;   \
+        _SEC_OFF = _CLUS_OFF % BSIZE;                                          \
+    } while (0)
 
 typedef struct {
     u32 clus_no;
@@ -124,8 +118,8 @@ fat_entry_loc get_fat_entry_location(u32 inum) {
     // we can conclude from that where the fat entry is,
     // thus find the data region of the directory.
     //
-    // this is 2 step memory or even disk indirection, thus extremely inefficient,
-    // we can imporve it later
+    // this is 2 step memory or even disk indirection, thus extremely
+    // inefficient, we can imporve it later
 
     // inode is root dir?
     fat_entry_loc loc;
@@ -146,7 +140,7 @@ fat_entry_loc get_fat_entry_location(u32 inum) {
     bread(buf, dir_sec, 1);
 
     fat32_dirent *dent = (fat32_dirent *)(buf + dir_off_sec);
-    
+
     u32 fat_clus = ((dent->fat_clus_hi << 16) + dent->fat_clus_lo);
     u32 fat_offset = fat_clus * 4;
     u32 fat_off_sec = ff->bpb.rsvd_sec_cnt + (fat_offset / BSIZE);
@@ -209,16 +203,80 @@ void print_dirent(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) {
     char name[12];
     while (si < 11) {
         char c = dent->name[si++];
-        if (c == ' ') continue;
-        if (c == 0x05) c = 0xe5; // Restore replaced DDEM character
-        if (si == 9) name[di++] = '.';
+        if (c == ' ')
+            continue;
+        if (c == 0x05)
+            c = 0xe5; // Restore replaced DDEM character
+        if (si == 9)
+            name[di++] = '.';
         name[di++] = c;
     }
     printf("%s\n", name);
 }
 
-void test_ls() {
-    scandir(get_root_inode(), print_dirent, 0);
+void test_ls() { scandir(get_root_inode(), print_dirent, 0); }
+
+typedef struct {
+    char *name;
+    u32 clus_no;
+    u32 off;
+    fat32_dirent dent;
+} search_result;
+
+static void decode_fat_sfn(char *name, fat32_dirent *dent) {
+    int si = 0, di = 0;
+    while (si < 11) {
+        char c = dent->name[si++];
+        if (c == ' ')
+            continue;
+        if (c == 0x05)
+            c = 0xe5; // Restore replaced DDEM character
+        if (si == 9)
+            name[di++] = '.';
+        name[di++] = c;
+    }
+    name[di] = 0;
+}
+
+// FIXME: Early bail-out
+static void search_file(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) {
+    assert(res);
+    search_result *sr = (search_result *)res;
+
+    if ((u8)dent->name[0] == 0xe5) {
+        // Directory entry is free, skip this one
+        return;
+    }
+
+    int si = 0, di = 0;
+    char name[12];
+    decode_fat_sfn(name, dent);
+
+    if (strcmp(name, sr->name) == 0) {
+        sr->clus_no = clus_no;
+        sr->off = offset;
+        sr->dent = *dent;
+    }
+}
+
+inode *fat_openat(inode *dir, char *name) {
+    search_result res = {.name = name};
+    scandir(dir, search_file, &res);
+
+    // Found
+    if (res.clus_no == 0) {
+        return NULL;
+    }
+
+    u32 inum = (res.clus_no << 12) + res.off;
+    inode *ip = iget(0, inum);
+
+    return ip;
+}
+
+void test_open() {
+    inode *ip = fat_openat(get_root_inode(), "README.TXT");
+    assert(ip);
 }
 
 // Returns non-zero if this file is a directory.
@@ -235,13 +293,104 @@ static void get_fileinfo(linux_dirent64 *ldent, fat32_dirent *dent) {
     int si = 0, di = 0;
     while (si < 11) {
         char c = dent->name[si++];
-        if (c == ' ') continue;
-        if (c == 0x05) c = 0xe5; // Restore replaced DDEM character
-        if (si == 9) ldent->d_name[di++] = '.';
+        if (c == ' ')
+            continue;
+        if (c == 0x05)
+            c = 0xe5; // Restore replaced DDEM character
+        if (si == 9)
+            ldent->d_name[di++] = '.';
         ldent->d_name[di++] = c;
     }
     ldent->d_name[di] = 0; // Terminate the SFN
 }
+
+/*
+// Paths
+
+// Copy the next path element from path into name.
+// Return a pointer to the element following the copied one.
+// The returned path has no leading slashes,
+// so the caller can check *path=='\0' to see if the name is the last one.
+// If no name to remove, return 0.
+//
+// Examples:
+//   skipelem("a/bb/c", name) = "bb/c", setting name = "a"
+//   skipelem("///a//bb", name) = "bb", setting name = "a"
+//   skipelem("a", name) = "", setting name = "a"
+//   skipelem("", name) = skipelem("////", name) = 0
+//
+static char *skipelem(char *path, char *name) {
+    char *s;
+    int len;
+
+    while (*path == '/')
+        path++;
+    if (*path == 0)
+        return 0;
+    s = path;
+    while (*path != '/' && *path != 0)
+        path++;
+    len = path - s;
+    if (len >= DIRSIZ)
+        memcpy(name, s, DIRSIZ);
+    else {
+        memcpy(name, s, len);
+        name[len] = 0;
+    }
+    while (*path == '/')
+        path++;
+    return path;
+}
+
+// Look up and return the inode for a path name.
+// If parent != 0, return the inode for the parent and copy the final
+// path element into name, which must have room for DIRSIZ bytes.
+// Must be called inside a transaction since it calls iput().
+static struct inode *namex(char *path, int nameiparent, char *name) {
+    struct inode *ip, *next;
+
+    if (*path == '/')
+        ip = get_root_inode();
+    else
+        assert(false && "namex: relative path not supported");
+        //ip = idup(myproc()->cwd);
+
+    while ((path = skipelem(path, name)) != 0) {
+        // FIXME: Check if ip is a directory
+        // if not, return NULL
+        //if (ip->type != T_DIR) {
+            //iunlockput(ip);
+            //return 0;
+        //}
+
+        if (nameiparent && *path == '\0') {
+            // Stop one level early.
+            return ip;
+        }
+
+        if ((next = dirlookup(ip, name, 0)) == 0) {
+            iunlockput(ip);
+            return 0;
+        }
+        iunlockput(ip);
+        ip = next;
+    }
+    if (nameiparent) {
+        iput(ip);
+        return 0;
+    }
+    return ip;
+}
+
+struct inode *namei(char *path) {
+    char name[DIRSIZ];
+    return namex(path, 0, name);
+}
+
+struct inode *nameiparent(char *path, char *name) {
+    return namex(path, 1, name);
+}
+*/
 
 /*
 fat32_dirent find_dirent_by_name(const char *name) {
@@ -250,7 +399,7 @@ fat32_dirent find_dirent_by_name(const char *name) {
 
 static int file_open(fat32_dir *dir, fat32_file *f, const char *name) {
     char buf[1024];
-    
+
     // Cleanup: There's a lot of directory traversing code,
     // find a way to reuse it.
     while (1) {
@@ -261,7 +410,7 @@ static int file_open(fat32_dir *dir, fat32_file *f, const char *name) {
             printf("%8llu  ", d->d_ino);
             u8 d_type = d->d_type;
             if (strcmp(name, d->d_name) == 0) {
-                
+
             }
             bpos += d->d_reclen;
         }

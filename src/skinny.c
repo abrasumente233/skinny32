@@ -185,14 +185,15 @@ static void scandir(inode *ip, scan_fn fn, void *res) {
             if ((u8)dent->name[0] == 0x00) {
                 // Directory entry is free, and there's no dirents
                 // following this entry anymore, stop getting dirents.
-                break;
+                goto scan_done;
             }
             int scan_res = fn(clus, i * sizeof(fat32_dirent), dent, res);
             if (scan_res == SCAN_BREAK) {
-                break;
+                goto scan_done;
             }
         }
     }
+    scan_done:;
 
 }
 

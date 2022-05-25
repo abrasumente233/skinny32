@@ -21,5 +21,9 @@ w
 echo '[fs: 3/3] copying files to the disk'
 mkdir -p fs
 sudo mount $hdd fs/
+
 sudo cp README fs/README.TXT
+sudo mkdir fs/TEST_DIR
+sudo cp README fs/TEST_DIR/POEM.TXT
+
 sudo umount fs/

@@ -15,6 +15,8 @@ typedef unsigned long long  u64;
 typedef unsigned long long  usize;
 typedef long long           isize;
 
+#define DIRSIZ 12
+
 /* Boringly bad interface implementation to the FAT32 filesystem. */
 /* You can't find a worse version than mine. */
 typedef struct __attribute__((__packed__)) fat32_bpb {

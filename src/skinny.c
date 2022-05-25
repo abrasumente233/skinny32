@@ -164,6 +164,10 @@ static fat_entry read_fat_entry(fat_entry_loc loc) {
     return fe;
 }
 
+static int is_fat_entry_eoc(fat_entry fe) {
+    return fe >= 0x0ffffff8 && fe <= 0x0fffffff;
+}
+
 static void scandir(inode *ip, scan_fn fn, void *res) {
     u32 fat_entry_sec, fat_entry_off;
     fat_entry_loc loc = get_fat_entry_location(ip->inum);
@@ -171,7 +175,8 @@ static void scandir(inode *ip, scan_fn fn, void *res) {
     fat_entry fe = read_fat_entry(loc);
 
     // We don't handle chain of clusters for now... FIXME PLEASE
-    assert(fe == FE_EOC);
+    printf("fe: 0x%x\n", fe);
+    assert(is_fat_entry_eoc(fe));
 
     // Now we arrive at the data region
     u32 sec;
@@ -193,28 +198,6 @@ static void scandir(inode *ip, scan_fn fn, void *res) {
     }
 }
 
-void print_dirent(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) {
-    if ((u8)dent->name[0] == 0xe5) {
-        // Directory entry is free, skip this one
-        return;
-    }
-
-    int si = 0, di = 0;
-    char name[12];
-    while (si < 11) {
-        char c = dent->name[si++];
-        if (c == ' ')
-            continue;
-        if (c == 0x05)
-            c = 0xe5; // Restore replaced DDEM character
-        if (si == 9)
-            name[di++] = '.';
-        name[di++] = c;
-    }
-    printf("%s\n", name);
-}
-
-void test_ls() { scandir(get_root_inode(), print_dirent, 0); }
 
 typedef struct {
     char *name;
@@ -252,14 +235,16 @@ static void search_file(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) 
     char name[12];
     decode_fat_sfn(name, dent);
 
+    printf("name: %s, sr->name: %s\n", name, sr->name);
     if (strcmp(name, sr->name) == 0) {
+        printf("Found!\n");
         sr->clus_no = clus_no;
         sr->off = offset;
         sr->dent = *dent;
     }
 }
 
-inode *fat_openat(inode *dir, char *name) {
+inode *fat_dirlookup(inode *dir, char *name) {
     search_result res = {.name = name};
     scandir(dir, search_file, &res);
 
@@ -274,16 +259,12 @@ inode *fat_openat(inode *dir, char *name) {
     return ip;
 }
 
-void test_open() {
-    inode *ip = fat_openat(get_root_inode(), "README.TXT");
-    assert(ip);
-}
-
 // Returns non-zero if this file is a directory.
 static inline int is_dirent_dir(fat32_dirent *dent) {
     return (dent->attr & ATTR_DIRECTORY);
 }
 
+/*
 static void get_fileinfo(linux_dirent64 *ldent, fat32_dirent *dent) {
     ldent->d_ino = 44;
     ldent->d_off = 44;
@@ -303,8 +284,8 @@ static void get_fileinfo(linux_dirent64 *ldent, fat32_dirent *dent) {
     }
     ldent->d_name[di] = 0; // Terminate the SFN
 }
+*/
 
-/*
 // Paths
 
 // Copy the next path element from path into name.
@@ -352,7 +333,7 @@ static struct inode *namex(char *path, int nameiparent, char *name) {
     if (*path == '/')
         ip = get_root_inode();
     else
-        assert(false && "namex: relative path not supported");
+        assert(0 && "namex: relative path not supported");
         //ip = idup(myproc()->cwd);
 
     while ((path = skipelem(path, name)) != 0) {
@@ -368,15 +349,12 @@ static struct inode *namex(char *path, int nameiparent, char *name) {
             return ip;
         }
 
-        if ((next = dirlookup(ip, name, 0)) == 0) {
-            iunlockput(ip);
+        if ((next = fat_dirlookup(ip, name)) == 0) {
             return 0;
         }
-        iunlockput(ip);
         ip = next;
     }
     if (nameiparent) {
-        iput(ip);
         return 0;
     }
     return ip;
@@ -390,7 +368,6 @@ struct inode *namei(char *path) {
 struct inode *nameiparent(char *path, char *name) {
     return namex(path, 1, name);
 }
-*/
 
 /*
 fat32_dirent find_dirent_by_name(const char *name) {
@@ -453,3 +430,23 @@ isize getdents(int fd, void *dirp, usize count) {
     return read;
 }
 */
+
+void test_open() {
+    //inode *ip = fat_dirlookup(get_root_inode(), "README.TXT");
+    //inode *ip = namei("/README.TXT");
+    inode *ip = namei("/TEST_DIR/POEM.TXT");
+    assert(ip);
+}
+
+void print_dirent(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) {
+    if ((u8)dent->name[0] == 0xe5) {
+        // Directory entry is free, skip this one
+        return;
+    }
+
+    char name[12];
+    decode_fat_sfn(name, dent);
+    printf("%s\n", name);
+}
+
+void test_ls() { scandir(get_root_inode(), print_dirent, 0); }

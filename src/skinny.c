@@ -187,7 +187,10 @@ static void scandir(inode *ip, scan_fn fn, void *res) {
                 // following this entry anymore, stop getting dirents.
                 break;
             }
-            fn(clus, i * sizeof(fat32_dirent), dent, res);
+            int scan_res = fn(clus, i * sizeof(fat32_dirent), dent, res);
+            if (scan_res == SCAN_BREAK) {
+                break;
+            }
         }
     }
 
@@ -217,13 +220,13 @@ static void decode_fat_sfn(char *name, fat32_dirent *dent) {
 }
 
 // FIXME: Early bail-out
-static void search_file(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) {
+static int search_file(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) {
     assert(res);
     search_result *sr = (search_result *)res;
 
     if ((u8)dent->name[0] == 0xe5) {
         // Directory entry is free, skip this one
-        return;
+        return SCAN_CONT;
     }
 
     int si = 0, di = 0;
@@ -236,7 +239,10 @@ static void search_file(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) 
         sr->clus_no = clus_no;
         sr->off = offset;
         sr->dent = *dent;
+        return SCAN_BREAK;
     }
+
+    return SCAN_CONT;
 }
 
 inode *fat_dirlookup(inode *dir, char *name) {
@@ -433,15 +439,17 @@ void test_open() {
     assert(ip);
 }
 
-void print_dirent(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) {
+static int print_dirent(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) {
     if ((u8)dent->name[0] == 0xe5) {
         // Directory entry is free, skip this one
-        return;
+        return SCAN_CONT;
     }
 
     char name[12];
     decode_fat_sfn(name, dent);
     printf("%s\n", name);
+
+    return SCAN_CONT;
 }
 
 void test_ls() { scandir(get_root_inode(), print_dirent, 0); }

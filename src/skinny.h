@@ -101,7 +101,10 @@ typedef struct inode {
     u32 inum;
 } inode;
 
-typedef void (*scan_fn)(u32 clus_no, u32 offset, fat32_dirent *dirent, void *res);
+#define SCAN_BREAK 0
+#define SCAN_CONT  1
+
+typedef int (*scan_fn)(u32 clus_no, u32 offset, fat32_dirent *dirent, void *res);
 
 typedef u32 fat_entry;
 

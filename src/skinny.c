@@ -107,13 +107,8 @@ static inode *get_root_inode() { return iget(0, /* inum */ 0); }
         _SEC_OFF = _CLUS_OFF % BSIZE;                                          \
     } while (0)
 
-typedef struct {
-    u32 clus_no;
-    u32 sec;
-    u32 off; // offset in bytes
-} fat_entry_loc;
-
-fat_entry_loc get_fat_entry_location(u32 inum) {
+// Returns the first data cluster number of the given inode.
+u32 get_first_data_cluster(u32 inum) {
     // we have ip->inum, which tells us where the dir entry is,
     // we can conclude from that where the fat entry is,
     // thus find the data region of the directory.
@@ -122,12 +117,8 @@ fat_entry_loc get_fat_entry_location(u32 inum) {
     // inefficient, we can imporve it later
 
     // inode is root dir?
-    fat_entry_loc loc;
     if (inum == 0) {
-        loc.clus_no = 2;
-        loc.sec = ff->bpb.rsvd_sec_cnt;
-        loc.off = 8;
-        return loc;
+        return 2;
     }
 
     // location of dir entry
@@ -142,25 +133,19 @@ fat_entry_loc get_fat_entry_location(u32 inum) {
     fat32_dirent *dent = (fat32_dirent *)(buf + dir_off_sec);
 
     u32 fat_clus = ((dent->fat_clus_hi << 16) + dent->fat_clus_lo);
-    u32 fat_offset = fat_clus * 4;
+
+    return fat_clus;
+}
+
+static fat_entry get_fat_entry(u32 clus_no) {
+    u32 fat_offset = clus_no * 4;
     u32 fat_off_sec = ff->bpb.rsvd_sec_cnt + (fat_offset / BSIZE);
     u32 fat_entry_off = fat_offset % BSIZE;
 
-    loc.clus_no = fat_clus;
-    loc.sec = fat_off_sec;
-    loc.off = fat_entry_off;
-    return loc;
-
-    /*
-    bread(buf, fat_off_sec, 1);
-    fat_entry fe = *((fat_entry *)(buf + fat_entry_off));
-    */
-}
-
-static fat_entry read_fat_entry(fat_entry_loc loc) {
     u8 buf[BSIZE];
-    bread(buf, loc.sec, 1);
-    fat_entry fe = *((fat_entry *)(buf + loc.off));
+    bread(buf, fat_off_sec, 1);
+
+    fat_entry fe = *((fat_entry *)(buf + fat_entry_off));
     return fe;
 }
 
@@ -168,34 +153,44 @@ static int is_fat_entry_eoc(fat_entry fe) {
     return fe >= 0x0ffffff8 && fe <= 0x0fffffff;
 }
 
+// Returns 0 if clus_no is a EOC.
+// Returns a valid cluster number if not
+// Oh if the ent is 0... you wont get a zero if you're a good citizen
+static u32 next_in_chain(u32 clus_no) {
+    fat_entry ent = get_fat_entry(clus_no);
+    assert(ent != 0);
+
+    if (is_fat_entry_eoc(ent)) {
+        return 0;
+    } else {
+        return ent;
+    }
+}
+
 static void scandir(inode *ip, scan_fn fn, void *res) {
     u32 fat_entry_sec, fat_entry_off;
-    fat_entry_loc loc = get_fat_entry_location(ip->inum);
-
-    fat_entry fe = read_fat_entry(loc);
-
-    // We don't handle chain of clusters for now... FIXME PLEASE
-    printf("fe: 0x%x\n", fe);
-    assert(is_fat_entry_eoc(fe));
+    u32 first_clus = get_first_data_cluster(ip->inum);
 
     // Now we arrive at the data region
-    u32 sec;
-    sec = ff->rootdir_base_sec + (loc.clus_no - 2) * ff->bpb.sec_per_clus;
+    for (u32 clus = first_clus; clus; clus = next_in_chain(clus)) {
+        u32 sec = ff->rootdir_base_sec + (clus - 2) * ff->bpb.sec_per_clus;
 
-    // Note that we assume in read_bpb sectors per cluster is one.
-    // Haha, Lazy.
-    u8 buf[BSIZE];
-    bread(buf, sec, 1);
-    fat32_dirent *dents = (fat32_dirent *)buf;
-    for (int i = 0; i < BSIZE / sizeof(fat32_dirent); i++) {
-        fat32_dirent *dent = dents + i;
-        if ((u8)dent->name[0] == 0x00) {
-            // Directory entry is free, and there's no dirents
-            // following this entry anymore, stop getting dirents.
-            break;
+        // Note that we assume in read_bpb sectors per cluster is one.
+        // Haha, Lazy.
+        u8 buf[BSIZE];
+        bread(buf, sec, 1);
+        fat32_dirent *dents = (fat32_dirent *)buf;
+        for (int i = 0; i < BSIZE / sizeof(fat32_dirent); i++) {
+            fat32_dirent *dent = dents + i;
+            if ((u8)dent->name[0] == 0x00) {
+                // Directory entry is free, and there's no dirents
+                // following this entry anymore, stop getting dirents.
+                break;
+            }
+            fn(clus, i * sizeof(fat32_dirent), dent, res);
         }
-        fn(loc.clus_no, i * sizeof(fat32_dirent), dent, res);
     }
+
 }
 
 

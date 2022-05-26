@@ -11,6 +11,7 @@
 static fat32 *ff;
 
 static u32 get_dir_size(struct inode *ip);
+static u32 encode_sfn(void *res, const char *name);
 
 #define CLUS2SEC(_CLUS_NO, _CLUS_OFF, _SEC_NO, _SEC_OFF)                       \
     do {                                                                       \
@@ -272,6 +273,12 @@ static u32 bmap(inode *ip, u32 bn, int alloc) {
         // which is EOC
         if (alloc) {
             clus = balloc();
+            printf("new clus: %d\n", clus);
+            printf("clus sec: %d\n", clus_data_sector(clus));
+            fat32_dirent dent = read_fat32_dirent(ip->inum);
+            dent.fat_clus_lo = clus & 0xffff;
+            dent.fat_clus_hi = (clus >> 16) & 0xffff;
+            write_fat32_dirent(ip->inum, &dent);
         } else {
             return 0;
         }
@@ -383,10 +390,11 @@ int writei(struct inode *ip, int user_src, void *src, u32 off, u32 n) {
     */
 
     for (tot = 0; tot < n; tot += m, off += m, src += m) {
-
-        bread(buf, bmap_noalloc(ip, off / BSIZE), 1);
+        u32 sec = bmap_alloc(ip, off / BSIZE);
+        bread(buf, sec, 1);
         m = min(n - tot, BSIZE - off % BSIZE);
         memcpy(buf + (off % BSIZE), src, m);
+        bwrite(buf, sec, 1);
     }
 
     // FIXME: Set inode's size
@@ -794,6 +802,8 @@ static inode *dirlink(inode *dir, char *name, u32 inode_type) {
         .attr = ((inode_type == T_DIR) ? ATTR_DIRECTORY : 0),
     };
 
+    encode_sfn(dirent.name, name);
+
     write_fat32_dirent(inum, &dirent);
 
     return iget(0, inum);
@@ -889,9 +899,9 @@ static u32 encode_sfn(void *res, const char *name) {
     if (sfn[0] == DDEM)
         sfn[0] = RDDEM; /* If the first character collides with DDEM, replace it
                            with RDDEM */
-    sfn[NSFLAG] = (c <= ' ' || p[si] <= ' ')
-                      ? NS_LAST
-                      : 0; /* Set last segment flag if end of the path */
+    //sfn[NSFLAG] = (c <= ' ' || p[si] <= ' ')
+                      //? NS_LAST
+                      //: 0; /* Set last segment flag if end of the path */
 
     return 0;
 }
@@ -901,4 +911,13 @@ void test_encode_sfn() {
     u32 ret = encode_sfn(name, "hello.txt");
     assert(ret == 0);
     printf("name = %s\n", name);
+}
+
+void test_dirlink() {
+    inode *ip = get_root_inode();
+    inode *new_file = dirlink(ip, "NEW.TXT", T_FILE);
+    assert(new_file);
+    printf("new_file inum = 0x%x\n", new_file->inum);
+    char data[] = "hello world\n";
+    writei(new_file, 0, data, 0, strlen(data));
 }

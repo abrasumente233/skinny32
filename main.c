@@ -17,6 +17,7 @@ void test_balloc();
 void test_readi();
 void test_dirent_alloc();
 void test_encode_sfn();
+void test_dirlink();
 
 int main() {
     init_block_device();
@@ -35,6 +36,8 @@ int main() {
     test_dirent_alloc();
     printf("-----------------\n");
     test_encode_sfn();
+    printf("-----------------\n");
+    test_dirlink();
 
     release_block();
     return 0;

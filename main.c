@@ -15,6 +15,7 @@ void test_open();
 void test_bmap();
 void test_balloc();
 void test_readi();
+void test_dirent_alloc();
 
 int main() {
     init_block_device();
@@ -29,6 +30,8 @@ int main() {
     test_bmap();
     printf("-----------------\n");
     test_readi();
+    printf("-----------------\n");
+    test_dirent_alloc();
 
     release_block();
     return 0;

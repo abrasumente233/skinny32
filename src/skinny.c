@@ -19,7 +19,6 @@ static u32 get_dir_size(struct inode *ip);
         _SEC_OFF = _CLUS_OFF % BSIZE;                                          \
     } while (0)
 
-
 static void read_bpb(fat32 *fs) {
     fat32_bpb *bpb = &fs->bpb;
 
@@ -86,7 +85,7 @@ static fat32_dirent read_fat32_dirent(u32 inum) {
     bread(buf, dir_sec, 1);
 
     fat32_dirent *dent = (fat32_dirent *)(buf + dir_off_sec);
-    
+
     return *dent;
 }
 
@@ -105,8 +104,8 @@ static void idalloc(inode *in) { free(in); }
 static inode *iget(u32 dev, u32 inum) {
     inode *in = ialloc();
     in->inum = inum;
-    
-    if (inum != 0)  {
+
+    if (inum != 0) {
         fat32_dirent entry = read_fat32_dirent(inum);
         in->type = (entry.attr & ATTR_DIRECTORY) ? T_DIR : T_FILE;
         in->size = entry.file_size;
@@ -291,13 +290,9 @@ static u32 bmap(inode *ip, u32 bn, int alloc) {
     return sec;
 }
 
-static u32 bmap_noalloc(inode *ip, u32 bn) {
-    return bmap(ip, bn, 0);
-}
+static u32 bmap_noalloc(inode *ip, u32 bn) { return bmap(ip, bn, 0); }
 
-static u32 bmap_alloc(inode *ip, u32 bn) {
-    return bmap(ip, bn, 1);
-}
+static u32 bmap_alloc(inode *ip, u32 bn) { return bmap(ip, bn, 1); }
 
 static u32 get_dir_size(struct inode *ip) {
     assert(ip);
@@ -324,7 +319,8 @@ static u32 get_dir_size(struct inode *ip) {
 // Caller must hold ip->lock.
 // If user_dst==1, then dst is a user virtual address;
 // otherwise, dst is a kernel address.
-int readi(struct inode *ip, int user_dst, void *dst, u32 off, u32 n, u32 *inum) {
+int readi(struct inode *ip, int user_dst, void *dst, u32 off, u32 n,
+          u32 *inum) {
     u32 tot, m;
     char buf[BSIZE];
 
@@ -358,42 +354,39 @@ int readi(struct inode *ip, int user_dst, void *dst, u32 off, u32 n, u32 *inum) 
 // Returns the number of bytes successfully written.
 // If the return value is less than the requested n,
 // there was an error of some kind.
-int
-writei(struct inode *ip, int user_src, void *src, u32 off, u32 n)
-{
-  u32 tot, m;
-  char buf[BSIZE];
+int writei(struct inode *ip, int user_src, void *src, u32 off, u32 n) {
+    u32 tot, m;
+    char buf[BSIZE];
 
-  // FIXME: Check the bound
-  /*
-  if(off > ip->size || off + n < off)
-    return -1;
-  if(off + n > MAXFILE*BSIZE)
-    return -1;
-  */
+    // FIXME: Check the bound
+    /*
+    if(off > ip->size || off + n < off)
+      return -1;
+    if(off + n > MAXFILE*BSIZE)
+      return -1;
+    */
 
-  for(tot=0; tot<n; tot+=m, off+=m, src+=m){
-      
-    bread(buf, bmap_noalloc(ip, off / BSIZE), 1);
-    m = min(n - tot, BSIZE - off%BSIZE);
-    memcpy(buf + (off % BSIZE), src, m);
-  }
+    for (tot = 0; tot < n; tot += m, off += m, src += m) {
 
-  // FIXME: Set inode's size
-  /*
-  if(off > ip->size)
-    ip->size = off;
-  */
+        bread(buf, bmap_noalloc(ip, off / BSIZE), 1);
+        m = min(n - tot, BSIZE - off % BSIZE);
+        memcpy(buf + (off % BSIZE), src, m);
+    }
 
-  // FIXME: Write back inode.
-  // write the i-node back to disk even if the size didn't change
-  // because the loop above might have called bmap() and added a new
-  // block to ip->addrs[].
-  //iupdate(ip);
+    // FIXME: Set inode's size
+    /*
+    if(off > ip->size)
+      ip->size = off;
+    */
 
-  return tot;
+    // FIXME: Write back inode.
+    // write the i-node back to disk even if the size didn't change
+    // because the loop above might have called bmap() and added a new
+    // block to ip->addrs[].
+    // iupdate(ip);
+
+    return tot;
 }
-
 
 // Returns 0 if clus_no is a EOC.
 // Returns a valid cluster number if not
@@ -487,6 +480,43 @@ inode *fat_dirlookup(inode *dir, char *name) {
     }
 
     return NULL;
+}
+
+static u32 dirent_alloc(inode *ip) {
+    assert(ip->type == T_DIR);
+    
+    char buf[sizeof(fat32_dirent)];
+    fat32_dirent *dent;
+    u32 inum = 0, off = 0;
+    u32 found = 0;
+
+    for (int i = 0; i < ip->size / sizeof(fat32_dirent); i++) {
+        printf("i = %d\n", i);
+        off = i * sizeof(fat32_dirent);
+        readi(ip, 0, buf, off, sizeof(fat32_dirent), &inum);
+        dent = (fat32_dirent *)buf;
+
+        if ((u8)dent->name[0] == 0xe5) {
+            // Directory entry is free, skip this one
+            found = 1;
+            break;
+        } else if ((u8)dent->name[0] == 0x00) {
+            // Directory entry is free, and there's no dirents
+            // following this entry anymore, stop getting dirents.
+            found = 1;
+            break;
+        }
+    }
+
+    assert(found);
+    printf("Allocated %d\n", inum);
+    if (dent->name[0] == 0x00) {
+        bmap_alloc(ip, ip->size / BSIZE + 1);
+        fat32_dirent last_entry = {0};
+        writei(ip, 0, &last_entry, ip->size, sizeof(fat32_dirent));
+    }
+
+    return inum;
 }
 
 // Returns non-zero if this file is a directory.
@@ -736,4 +766,17 @@ void test_readi() {
             printf("%s\n", name);
         }
     }
+}
+
+void test_dirent_alloc() {
+    inode *ip = get_root_inode();
+    u32 inum = dirent_alloc(ip);
+    assert(inum);
+    printf("inum = 0x%x\n", inum);
+
+    u32 clus = inum >> 12;
+    u32 off = inum & 0xfff;
+
+    printf("sector = %d\n", clus_data_sector(clus));
+    printf("off = %d\n", off);
 }

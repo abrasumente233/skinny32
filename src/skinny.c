@@ -153,8 +153,56 @@ static fat_entry get_fat_entry(u32 clus_no) {
     return fe;
 }
 
+// TODO: Performance stonks!
+static void set_fat_entry(u32 clus_no, fat_entry entry) {
+    u32 fat_offset = clus_no * 4;
+    u32 fat_off_sec = ff->bpb.rsvd_sec_cnt + (fat_offset / BSIZE);
+    u32 fat_entry_off = fat_offset % BSIZE;
+
+    u8 buf[BSIZE];
+    bread(buf, fat_off_sec, 1);
+
+    *((fat_entry *)(buf + fat_entry_off)) = entry;
+
+    bwrite(buf, fat_off_sec, 1);
+}
+
 static int is_fat_entry_eoc(fat_entry fe) {
     return fe >= 0x0ffffff8 && fe <= 0x0fffffff;
+}
+
+// Allocate a new cluster and return its cluster number.
+static u32 balloc() {
+    // TODO: Optimize balloc using FSINFO
+    // Go thourgh the FAT and find the first free cluster.
+
+    // sizes are in the unit of sectors
+    u32 fat_start = ff->bpb.rsvd_sec_cnt;
+    u32 fat_sz = ff->bpb.fat_sz_32;
+
+    for (u32 fat_sec = fat_start, clus_no = 0; fat_sec < fat_start + fat_sz;
+         fat_sec++) {
+
+        u8 buf[BSIZE];
+        bread(buf, fat_sec, 1);
+
+        for (u32 i = 0; i < BSIZE; i += 4, clus_no++) {
+            if (clus_no < 2) {
+                continue;
+            }
+
+            fat_entry fe = *((fat_entry *)(buf + i));
+            if (fe == FE_FREE) {
+                // found a free cluster
+                // set it to EOC
+                *((fat_entry *)(buf + i)) = 0x0fffffff;
+                bwrite(buf, fat_sec, 1);
+                return clus_no;
+            }
+        }
+    }
+
+    return 0; // No free clusters found
 }
 
 // Returns the sector number of the nth block
@@ -171,11 +219,12 @@ static u32 bmap(inode *ip, u32 bn) {
         // I don't know upon regular file creation,
         // what the first data cluster is set to be.
         // So I just temproarily defaults it to 0.
-        
+
         // TODO: Allocate a new cluster
         // And then the clus to be the newly allocated clus_no
         // whose fat entry is expected to be 0xffffffff
         // which is EOC
+        clus = balloc();
     }
 
     while (bn--) {
@@ -186,22 +235,22 @@ static u32 bmap(inode *ip, u32 bn) {
             // allocate a new cluster
             // set the fat entry to be this clus
             // and assign it to clus.
-            assert(0 && "allocating not implemented");
+            u32 new_clus = balloc();
+            set_fat_entry(clus, new_clus);
+            clus = new_clus;
         } else { // is a valid cluster in the middle of chain
             clus = entry;
         }
-
     }
 
     u32 sec = clus_data_sector(clus);
 
     // Cache the nth block -> sector mapping
-    //ip->bn = bn;
-    //ip->sec = asd;
+    // ip->bn = bn;
+    // ip->sec = asd;
 
     return sec;
 }
-
 
 // Returns 0 if clus_no is a EOC.
 // Returns a valid cluster number if not
@@ -243,10 +292,8 @@ static void scandir(inode *ip, scan_fn fn, void *res) {
             }
         }
     }
-    scan_done:;
-
+scan_done:;
 }
-
 
 typedef struct {
     char *name;
@@ -386,14 +433,14 @@ static struct inode *namex(char *path, int nameiparent, char *name) {
         ip = get_root_inode();
     else
         assert(0 && "namex: relative path not supported");
-        //ip = idup(myproc()->cwd);
+    // ip = idup(myproc()->cwd);
 
     while ((path = skipelem(path, name)) != 0) {
         // FIXME: Check if ip is a directory
         // if not, return NULL
-        //if (ip->type != T_DIR) {
-            //iunlockput(ip);
-            //return 0;
+        // if (ip->type != T_DIR) {
+        // iunlockput(ip);
+        // return 0;
         //}
 
         if (nameiparent && *path == '\0') {
@@ -484,13 +531,14 @@ isize getdents(int fd, void *dirp, usize count) {
 */
 
 void test_open() {
-    //inode *ip = fat_dirlookup(get_root_inode(), "README.TXT");
-    //inode *ip = namei("/README.TXT");
+    // inode *ip = fat_dirlookup(get_root_inode(), "README.TXT");
+    // inode *ip = namei("/README.TXT");
     inode *ip = namei("/TEST_DIR/POEM.TXT");
     assert(ip);
 }
 
-static int print_dirent(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) {
+static int print_dirent(u32 clus_no, u32 offset, fat32_dirent *dent,
+                        void *res) {
     if ((u8)dent->name[0] == 0xe5) {
         // Directory entry is free, skip this one
         return SCAN_CONT;
@@ -512,4 +560,12 @@ void test_bmap() {
 
     u32 second_clus = bmap(ip, 1);
     printf("second_clus = 0x%x\n", second_clus);
+
+    u32 third_clus = bmap(ip, 2);
+    printf("third_clus = 0x%x\n", third_clus);
+}
+
+void test_balloc() {
+    u32 clus_no = balloc();
+    printf("balloc = 0x%x\n", clus_no);
 }

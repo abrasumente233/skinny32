@@ -919,5 +919,14 @@ void test_dirlink() {
     assert(new_file);
     printf("new_file inum = 0x%x\n", new_file->inum);
     char data[] = "hello world\n";
+    
+    printf("writing to new file\n");
     writei(new_file, 0, data, 0, strlen(data));
+
+    char buf[512];
+    printf("reading from file\n");
+    readi(new_file, 0, buf, 0, strlen(data), 0);
+    buf[strlen(data)] = '\0';
+    printf("read: %s\n", buf);
+    
 }

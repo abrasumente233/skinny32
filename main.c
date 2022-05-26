@@ -14,6 +14,7 @@ void test_ls();
 void test_open();
 void test_bmap();
 void test_balloc();
+void test_readi();
 
 int main() {
     init_block_device();
@@ -26,8 +27,8 @@ int main() {
     test_open();
     printf("-----------------\n");
     test_bmap();
-    //printf("-----------------\n");
-    //test_balloc();
+    printf("-----------------\n");
+    test_readi();
 
     release_block();
     return 0;

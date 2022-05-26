@@ -6,6 +6,8 @@
 #include <block.h>
 #include <skinny.h>
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
+
 static fat32 *ff;
 
 static void read_bpb(fat32 *fs) {
@@ -250,6 +252,32 @@ static u32 bmap(inode *ip, u32 bn) {
     // ip->sec = asd;
 
     return sec;
+}
+
+// Read data from inode.
+// Caller must hold ip->lock.
+// If user_dst==1, then dst is a user virtual address;
+// otherwise, dst is a kernel address.
+int
+readi(struct inode *ip, int user_dst, void *dst, u32 off, u32 n)
+{
+  u32 tot, m;
+  char buf[BSIZE];
+
+  /*
+  if(off > ip->size || off + n < off)
+    return 0;
+  if(off + n > ip->size)
+    n = ip->size - off;
+*/
+
+  for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
+    bread(buf, bmap(ip, off/BSIZE), 1);
+    m = min(n - tot, BSIZE - off%BSIZE);
+    memcpy(dst, buf + (off % BSIZE), m);
+  }
+
+  return tot;
 }
 
 // Returns 0 if clus_no is a EOC.
@@ -568,4 +596,30 @@ void test_bmap() {
 void test_balloc() {
     u32 clus_no = balloc();
     printf("balloc = 0x%x\n", clus_no);
+}
+
+void test_readi() {
+    inode *ip = get_root_inode();
+
+    char buf[sizeof(fat32_dirent)];
+    u32 off = 0;
+
+    for (int i = 0; i < BSIZE / sizeof(fat32_dirent); i++) {
+        off = i * sizeof(fat32_dirent);
+        readi(ip, 0, buf, off, sizeof(fat32_dirent));
+        fat32_dirent *dent = (fat32_dirent *)buf;
+
+        if ((u8)dent->name[0] == 0xe5) {
+            // Directory entry is free, skip this one
+            continue;
+        } else if ((u8)dent->name[0] == 0x00) {
+            // Directory entry is free, and there's no dirents
+            // following this entry anymore, stop getting dirents.
+            break;
+        } else {
+            char name[12];
+            decode_fat_sfn(name, dent);
+            printf("%s\n", name);
+        }
+    }
 }

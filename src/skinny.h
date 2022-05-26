@@ -95,10 +95,16 @@ typedef struct linux_dirent64 {
 void init_fs(fat32 *fs);
 isize getdents(int fd, void *dirp, usize count);
 
+#define T_DIR  0x01
+#define T_FILE 0x02
+#define T_DEV  0x03
+
 
 // Simplified inode
 typedef struct inode {
     u32 inum;
+    u32 size;
+    u32 type;
 } inode;
 
 #define SCAN_BREAK 0

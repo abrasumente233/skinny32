@@ -10,6 +10,16 @@
 
 static fat32 *ff;
 
+static u32 get_dir_size(struct inode *ip);
+
+#define CLUS2SEC(_CLUS_NO, _CLUS_OFF, _SEC_NO, _SEC_OFF)                       \
+    do {                                                                       \
+        _SEC_NO = ff->rootdir_base_sec +                                       \
+                  (_CLUS_NO - 2) * ff->bpb.sec_per_clus + _CLUS_OFF / BSIZE;   \
+        _SEC_OFF = _CLUS_OFF % BSIZE;                                          \
+    } while (0)
+
+
 static void read_bpb(fat32 *fs) {
     fat32_bpb *bpb = &fs->bpb;
 
@@ -60,6 +70,26 @@ void init_fs(fat32 *fs) {
     printf("FAT32 setup successfully\n");
 }
 
+static fat32_dirent read_fat32_dirent(u32 inum) {
+    assert(inum != 0);
+
+    u32 clus = inum >> 12;
+    u32 off = inum & 0xfff;
+
+    // location of dir entry
+    u32 dir_clus = (inum >> 12);
+    u32 dir_off_clus = (inum & 0xfff);
+
+    u32 dir_sec, dir_off_sec;
+    CLUS2SEC(dir_clus, dir_off_clus, dir_sec, dir_off_sec);
+    u8 buf[BSIZE];
+    bread(buf, dir_sec, 1);
+
+    fat32_dirent *dent = (fat32_dirent *)(buf + dir_off_sec);
+    
+    return *dent;
+}
+
 // Plug in your OS's favorite allocation scheme here.
 static inode *ialloc() { return malloc(sizeof(inode)); }
 
@@ -75,6 +105,18 @@ static void idalloc(inode *in) { free(in); }
 static inode *iget(u32 dev, u32 inum) {
     inode *in = ialloc();
     in->inum = inum;
+    
+    if (inum != 0)  {
+        fat32_dirent entry = read_fat32_dirent(inum);
+        in->type = (entry.attr & ATTR_DIRECTORY) ? T_DIR : T_FILE;
+        in->size = entry.file_size;
+    } else {
+        in->type = T_DIR;
+    }
+
+    if (in->type == T_DIR) {
+        in->size = get_dir_size(in);
+    }
 
     return in;
 }
@@ -102,13 +144,6 @@ static inode *iget(u32 dev, u32 inum) {
 // all we do is to specially handle it.
 static inode *get_root_inode() { return iget(0, /* inum */ 0); }
 
-#define CLUS2SEC(_CLUS_NO, _CLUS_OFF, _SEC_NO, _SEC_OFF)                       \
-    do {                                                                       \
-        _SEC_NO = ff->rootdir_base_sec +                                       \
-                  (_CLUS_NO - 2) * ff->bpb.sec_per_clus + _CLUS_OFF / BSIZE;   \
-        _SEC_OFF = _CLUS_OFF % BSIZE;                                          \
-    } while (0)
-
 // Returns the first data cluster number of the given inode.
 static u32 get_first_data_cluster(u32 inum) {
     // we have ip->inum, which tells us where the dir entry is,
@@ -123,18 +158,8 @@ static u32 get_first_data_cluster(u32 inum) {
         return 2;
     }
 
-    // location of dir entry
-    u32 dir_clus = (inum >> 12);
-    u32 dir_off_clus = (inum & 0xfff);
-
-    u32 dir_sec, dir_off_sec;
-    CLUS2SEC(dir_clus, dir_off_clus, dir_sec, dir_off_sec);
-    u8 buf[BSIZE];
-    bread(buf, dir_sec, 1);
-
-    fat32_dirent *dent = (fat32_dirent *)(buf + dir_off_sec);
-
-    u32 fat_clus = ((dent->fat_clus_hi << 16) + dent->fat_clus_lo);
+    fat32_dirent dent = read_fat32_dirent(inum);
+    u32 fat_clus = ((dent.fat_clus_hi << 16) + dent.fat_clus_lo);
 
     return fat_clus;
 }
@@ -211,7 +236,7 @@ static u32 balloc() {
 // in inode ip.
 //
 // If there's no such block, bmap allocates one.
-static u32 bmap(inode *ip, u32 bn) {
+static u32 bmap(inode *ip, u32 bn, int alloc) {
 
     assert(ip);
 
@@ -226,7 +251,11 @@ static u32 bmap(inode *ip, u32 bn) {
         // And then the clus to be the newly allocated clus_no
         // whose fat entry is expected to be 0xffffffff
         // which is EOC
-        clus = balloc();
+        if (alloc) {
+            clus = balloc();
+        } else {
+            return 0;
+        }
     }
 
     while (bn--) {
@@ -237,9 +266,13 @@ static u32 bmap(inode *ip, u32 bn) {
             // allocate a new cluster
             // set the fat entry to be this clus
             // and assign it to clus.
-            u32 new_clus = balloc();
-            set_fat_entry(clus, new_clus);
-            clus = new_clus;
+            if (alloc) {
+                u32 new_clus = balloc();
+                set_fat_entry(clus, new_clus);
+                clus = new_clus;
+            } else {
+                return 0;
+            }
         } else { // is a valid cluster in the middle of chain
             clus = entry;
         }
@@ -254,31 +287,102 @@ static u32 bmap(inode *ip, u32 bn) {
     return sec;
 }
 
+static u32 bmap_noalloc(inode *ip, u32 bn) {
+    return bmap(ip, bn, 0);
+}
+
+static u32 bmap_alloc(inode *ip, u32 bn) {
+    return bmap(ip, bn, 1);
+}
+
+static u32 get_dir_size(struct inode *ip) {
+    assert(ip);
+    assert(ip->type == T_DIR);
+
+    u32 clus = get_first_data_cluster(ip->inum);
+    u32 size = 0;
+
+    while (clus != 0) {
+        u32 entry = get_fat_entry(clus);
+        assert(entry != FE_FREE);
+        assert(entry != FE_BAD);
+        size += BSIZE;
+        clus = entry;
+        if (is_fat_entry_eoc(entry)) {
+            break;
+        }
+    }
+
+    return size;
+}
+
 // Read data from inode.
 // Caller must hold ip->lock.
 // If user_dst==1, then dst is a user virtual address;
 // otherwise, dst is a kernel address.
+int readi(struct inode *ip, int user_dst, void *dst, u32 off, u32 n) {
+    u32 tot, m;
+    char buf[BSIZE];
+
+    /*
+    if(off > ip->size || off + n < off)
+      return 0;
+    if(off + n > ip->size)
+      n = ip->size - off;
+  */
+
+    for (tot = 0; tot < n; tot += m, off += m, dst += m) {
+        bread(buf, bmap_noalloc(ip, off / BSIZE), 1);
+        m = min(n - tot, BSIZE - off % BSIZE);
+        memcpy(dst, buf + (off % BSIZE), m);
+    }
+
+    return tot;
+}
+
+// Write data to inode.
+// Caller must hold ip->lock.
+// If user_src==1, then src is a user virtual address;
+// otherwise, src is a kernel address.
+// Returns the number of bytes successfully written.
+// If the return value is less than the requested n,
+// there was an error of some kind.
 int
-readi(struct inode *ip, int user_dst, void *dst, u32 off, u32 n)
+writei(struct inode *ip, int user_src, void *src, u32 off, u32 n)
 {
   u32 tot, m;
   char buf[BSIZE];
 
+  // FIXME: Check the bound
   /*
   if(off > ip->size || off + n < off)
-    return 0;
-  if(off + n > ip->size)
-    n = ip->size - off;
-*/
+    return -1;
+  if(off + n > MAXFILE*BSIZE)
+    return -1;
+  */
 
-  for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
-    bread(buf, bmap(ip, off/BSIZE), 1);
+  for(tot=0; tot<n; tot+=m, off+=m, src+=m){
+      
+    bread(buf, bmap_noalloc(ip, off / BSIZE), 1);
     m = min(n - tot, BSIZE - off%BSIZE);
-    memcpy(dst, buf + (off % BSIZE), m);
+    memcpy(buf + (off % BSIZE), src, m);
   }
+
+  // FIXME: Set inode's size
+  /*
+  if(off > ip->size)
+    ip->size = off;
+  */
+
+  // FIXME: Write back inode.
+  // write the i-node back to disk even if the size didn't change
+  // because the loop above might have called bmap() and added a new
+  // block to ip->addrs[].
+  //iupdate(ip);
 
   return tot;
 }
+
 
 // Returns 0 if clus_no is a EOC.
 // Returns a valid cluster number if not
@@ -563,6 +667,17 @@ void test_open() {
     // inode *ip = namei("/README.TXT");
     inode *ip = namei("/TEST_DIR/POEM.TXT");
     assert(ip);
+    printf("size：%d\n", ip->size);
+
+    // test dir size
+    ip = namei("/TEST_DIR");
+    assert(ip);
+    printf("size：%d\n", ip->size);
+
+    // test dir size
+    ip = namei("/");
+    assert(ip);
+    printf("size：%d\n", ip->size);
 }
 
 static int print_dirent(u32 clus_no, u32 offset, fat32_dirent *dent,
@@ -583,13 +698,13 @@ void test_ls() { scandir(get_root_inode(), print_dirent, 0); }
 
 void test_bmap() {
     inode *ip = get_root_inode();
-    u32 first_clus = bmap(ip, 0);
+    u32 first_clus = bmap_alloc(ip, 0);
     printf("first_clus = 0x%x\n", first_clus);
 
-    u32 second_clus = bmap(ip, 1);
+    u32 second_clus = bmap_alloc(ip, 1);
     printf("second_clus = 0x%x\n", second_clus);
 
-    u32 third_clus = bmap(ip, 2);
+    u32 third_clus = bmap_alloc(ip, 2);
     printf("third_clus = 0x%x\n", third_clus);
 }
 

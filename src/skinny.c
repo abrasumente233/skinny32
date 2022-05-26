@@ -168,6 +168,10 @@ static u32 clus_data_sector(u32 clus_no) {
     return ff->rootdir_base_sec + (clus_no - 2) * ff->bpb.sec_per_clus;
 }
 
+static u32 sec_to_clus(u32 sec) {
+    return (sec - ff->rootdir_base_sec) / ff->bpb.sec_per_clus + 2;
+}
+
 static fat_entry get_fat_entry(u32 clus_no) {
     u32 fat_offset = clus_no * 4;
     u32 fat_off_sec = ff->bpb.rsvd_sec_cnt + (fat_offset / BSIZE);
@@ -320,7 +324,7 @@ static u32 get_dir_size(struct inode *ip) {
 // Caller must hold ip->lock.
 // If user_dst==1, then dst is a user virtual address;
 // otherwise, dst is a kernel address.
-int readi(struct inode *ip, int user_dst, void *dst, u32 off, u32 n) {
+int readi(struct inode *ip, int user_dst, void *dst, u32 off, u32 n, u32 *inum) {
     u32 tot, m;
     char buf[BSIZE];
 
@@ -330,9 +334,16 @@ int readi(struct inode *ip, int user_dst, void *dst, u32 off, u32 n) {
     if(off + n > ip->size)
       n = ip->size - off;
   */
+    u32 inum_written = 0;
 
     for (tot = 0; tot < n; tot += m, off += m, dst += m) {
-        bread(buf, bmap_noalloc(ip, off / BSIZE), 1);
+        u32 sec = bmap_noalloc(ip, off / BSIZE);
+        u32 clus = sec_to_clus(sec);
+        bread(buf, sec, 1);
+        if (inum_written == 0 && inum) {
+            inum_written = 1;
+            *inum = (clus << 12) | (off % BSIZE);
+        }
         m = min(n - tot, BSIZE - off % BSIZE);
         memcpy(dst, buf + (off % BSIZE), m);
     }
@@ -449,45 +460,33 @@ static void decode_fat_sfn(char *name, fat32_dirent *dent) {
     name[di] = 0;
 }
 
-// FIXME: Early bail-out
-static int search_file(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) {
-    assert(res);
-    search_result *sr = (search_result *)res;
-
-    if ((u8)dent->name[0] == 0xe5) {
-        // Directory entry is free, skip this one
-        return SCAN_CONT;
-    }
-
-    int si = 0, di = 0;
-    char name[12];
-    decode_fat_sfn(name, dent);
-
-    printf("name: %s, sr->name: %s\n", name, sr->name);
-    if (strcmp(name, sr->name) == 0) {
-        printf("Found!\n");
-        sr->clus_no = clus_no;
-        sr->off = offset;
-        sr->dent = *dent;
-        return SCAN_BREAK;
-    }
-
-    return SCAN_CONT;
-}
-
 inode *fat_dirlookup(inode *dir, char *name) {
-    search_result res = {.name = name};
-    scandir(dir, search_file, &res);
+    assert(dir->type == T_DIR);
+    u32 inum;
+    char buf[sizeof(fat32_dirent)];
 
-    // Found
-    if (res.clus_no == 0) {
-        return NULL;
+    for (int i = 0; i < dir->size; i += sizeof(fat32_dirent)) {
+        u32 inum;
+        int nread = readi(dir, 0, buf, i, sizeof(fat32_dirent), &inum);
+        assert(nread == sizeof(fat32_dirent));
+        fat32_dirent *dent = (fat32_dirent *)buf;
+
+        if ((u8)dent->name[0] == 0xe5) {
+            // Directory entry is free, skip this one
+            continue;
+        }
+
+        char filename[12];
+        decode_fat_sfn(filename, dent);
+
+        printf("%s\n", filename);
+        if (strcmp(filename, name) == 0) {
+            printf("Found!\n");
+            return iget(0, inum);
+        }
     }
 
-    u32 inum = (res.clus_no << 12) + res.off;
-    inode *ip = iget(0, inum);
-
-    return ip;
+    return NULL;
 }
 
 // Returns non-zero if this file is a directory.
@@ -721,7 +720,7 @@ void test_readi() {
 
     for (int i = 0; i < BSIZE / sizeof(fat32_dirent); i++) {
         off = i * sizeof(fat32_dirent);
-        readi(ip, 0, buf, off, sizeof(fat32_dirent));
+        readi(ip, 0, buf, off, sizeof(fat32_dirent), NULL);
         fat32_dirent *dent = (fat32_dirent *)buf;
 
         if ((u8)dent->name[0] == 0xe5) {

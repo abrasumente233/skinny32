@@ -235,6 +235,22 @@ static u32 balloc() {
     return 0; // No free clusters found
 }
 
+static void write_fat32_dirent(u32 inum, fat32_dirent *dirent) {
+    assert(inum != 0);
+
+    u32 clus = inum >> 12;
+    u32 off = inum & 0xfff;
+
+    u32 sec = clus_data_sector(clus);
+
+    char buf[BSIZE];
+    bread(buf, sec, 1);
+    fat32_dirent *d = (fat32_dirent *)(buf + off);
+
+    *d = *dirent;
+    bwrite(buf, sec, 1);
+}
+
 // Returns the sector number of the nth block
 // in inode ip.
 //
@@ -484,7 +500,7 @@ inode *fat_dirlookup(inode *dir, char *name) {
 
 static u32 dirent_alloc(inode *ip) {
     assert(ip->type == T_DIR);
-    
+
     char buf[sizeof(fat32_dirent)];
     fat32_dirent *dent;
     u32 inum = 0, off = 0;
@@ -768,6 +784,21 @@ void test_readi() {
     }
 }
 
+// Returns the inode of the newly created dir entry.
+static inode *dirlink(inode *dir, char *name, u32 inode_type) {
+    assert(dir->type == T_DIR);
+
+    u32 inum = dirent_alloc(dir);
+
+    fat32_dirent dirent = {
+        .attr = ((inode_type == T_DIR) ? ATTR_DIRECTORY : 0),
+    };
+
+    write_fat32_dirent(inum, &dirent);
+
+    return iget(0, inum);
+}
+
 void test_dirent_alloc() {
     inode *ip = get_root_inode();
     u32 inum = dirent_alloc(ip);
@@ -779,4 +810,95 @@ void test_dirent_alloc() {
 
     printf("sector = %d\n", clus_data_sector(clus));
     printf("off = %d\n", off);
+}
+
+#define IsSeparator(c) ((c) == '/' || (c) == '\\')
+#define IsUpper(c) ((c) >= 'A' && (c) <= 'Z')
+#define IsLower(c) ((c) >= 'a' && (c) <= 'z')
+
+#define DDEM 0xE5  /* Deleted directory entry mark set to DIR_Name[0] */
+#define RDDEM 0x05 /* Replacement of the character collides with DDEM */
+#define NSFLAG 11
+#define NS_LOSS 0x01   /* Out of 8.3 format */
+#define NS_LFN 0x02    /* Force to create LFN entry */
+#define NS_LAST 0x04   /* Last segment */
+#define NS_BODY 0x08   /* Lower case flag (body) */
+#define NS_EXT 0x10    /* Lower case flag (ext) */
+#define NS_DOT 0x20    /* Dot entry */
+#define NS_NOLFN 0x40  /* Do not find LFN */
+#define NS_NONAME 0x80 /* Not followed */
+
+/* Test if the byte is DBC 1st byte */
+static int dbc_1st(u8 c) {
+    return 0; /* Always false */
+}
+
+/* Test if the byte is DBC 2nd byte */
+static int dbc_2nd(u8 c) {
+    return 0; /* Always false */
+}
+
+static u32 encode_sfn(void *res, const char *name) {
+    u8 c, d, *sfn;
+    u32 ni, si, i;
+    const char *p;
+
+    /* Create file name in directory form */
+    p = name;
+    sfn = res;
+    memset(sfn, ' ', 11);
+    si = i = 0;
+    ni = 8;
+    for (;;) {
+        c = (u32)p[si++]; /* Get a byte */
+        if (c <= ' ')
+            break;            /* Break if end of the path name */
+        if (IsSeparator(c)) { /* Break if a separator is found */
+            while (IsSeparator(p[si]))
+                si++; /* Skip duplicated separator if exist */
+            break;
+        }
+        if (c == '.' || i >= ni) { /* End of body or field overflow? */
+            if (ni == 11 || c != '.')
+                return -1;
+            i = 8;
+            ni = 11; /* Enter file extension field */
+            continue;
+        }
+        if (c >= 0x80) { /* Is SBC extended character? */
+            assert(0 && "SBC extended character not supported");
+            // c = ExCvt[c & 0x7F]; /* To upper SBC extended character */
+        }
+        if (dbc_1st(c)) {     /* Check if it is a DBC 1st byte */
+            d = (u32)p[si++]; /* Get 2nd byte */
+            if (!dbc_2nd(d) || i >= ni - 1)
+                return -1;
+            sfn[i++] = c;
+            sfn[i++] = d;
+        } else { /* SBC */
+            if (strchr("*+,:;<=>[]|\"\?\x7F", (int)c))
+                return -1;
+            if (IsLower(c))
+                c -= 0x20; /* To upper */
+            sfn[i++] = c;
+        }
+    }
+    if (i == 0)
+        return -1; /* Reject nul string */
+
+    if (sfn[0] == DDEM)
+        sfn[0] = RDDEM; /* If the first character collides with DDEM, replace it
+                           with RDDEM */
+    sfn[NSFLAG] = (c <= ' ' || p[si] <= ' ')
+                      ? NS_LAST
+                      : 0; /* Set last segment flag if end of the path */
+
+    return 0;
+}
+
+void test_encode_sfn() {
+    char name[12];
+    u32 ret = encode_sfn(name, "hello.txt");
+    assert(ret == 0);
+    printf("name = %s\n", name);
 }

@@ -16,6 +16,7 @@ void test_bmap();
 void test_balloc();
 void test_readi();
 void test_dirent_alloc();
+void test_encode_sfn();
 
 int main() {
     init_block_device();
@@ -32,6 +33,8 @@ int main() {
     test_readi();
     printf("-----------------\n");
     test_dirent_alloc();
+    printf("-----------------\n");
+    test_encode_sfn();
 
     release_block();
     return 0;

@@ -108,7 +108,7 @@ static inode *get_root_inode() { return iget(0, /* inum */ 0); }
     } while (0)
 
 // Returns the first data cluster number of the given inode.
-u32 get_first_data_cluster(u32 inum) {
+static u32 get_first_data_cluster(u32 inum) {
     // we have ip->inum, which tells us where the dir entry is,
     // we can conclude from that where the fat entry is,
     // thus find the data region of the directory.
@@ -137,6 +137,10 @@ u32 get_first_data_cluster(u32 inum) {
     return fat_clus;
 }
 
+static u32 clus_data_sector(u32 clus_no) {
+    return ff->rootdir_base_sec + (clus_no - 2) * ff->bpb.sec_per_clus;
+}
+
 static fat_entry get_fat_entry(u32 clus_no) {
     u32 fat_offset = clus_no * 4;
     u32 fat_off_sec = ff->bpb.rsvd_sec_cnt + (fat_offset / BSIZE);
@@ -152,6 +156,52 @@ static fat_entry get_fat_entry(u32 clus_no) {
 static int is_fat_entry_eoc(fat_entry fe) {
     return fe >= 0x0ffffff8 && fe <= 0x0fffffff;
 }
+
+// Returns the sector number of the nth block
+// in inode ip.
+//
+// If there's no such block, bmap allocates one.
+static u32 bmap(inode *ip, u32 bn) {
+
+    assert(ip);
+
+    u32 clus = get_first_data_cluster(ip->inum);
+
+    if (clus == 0) {
+        // I don't know upon regular file creation,
+        // what the first data cluster is set to be.
+        // So I just temproarily defaults it to 0.
+        
+        // TODO: Allocate a new cluster
+        // And then the clus to be the newly allocated clus_no
+        // whose fat entry is expected to be 0xffffffff
+        // which is EOC
+    }
+
+    while (bn--) {
+        u32 entry = get_fat_entry(clus);
+        assert(entry != FE_FREE);
+        assert(entry != FE_BAD);
+        if (is_fat_entry_eoc(entry)) {
+            // allocate a new cluster
+            // set the fat entry to be this clus
+            // and assign it to clus.
+            assert(0 && "allocating not implemented");
+        } else { // is a valid cluster in the middle of chain
+            clus = entry;
+        }
+
+    }
+
+    u32 sec = clus_data_sector(clus);
+
+    // Cache the nth block -> sector mapping
+    //ip->bn = bn;
+    //ip->sec = asd;
+
+    return sec;
+}
+
 
 // Returns 0 if clus_no is a EOC.
 // Returns a valid cluster number if not
@@ -454,3 +504,12 @@ static int print_dirent(u32 clus_no, u32 offset, fat32_dirent *dent, void *res) 
 }
 
 void test_ls() { scandir(get_root_inode(), print_dirent, 0); }
+
+void test_bmap() {
+    inode *ip = get_root_inode();
+    u32 first_clus = bmap(ip, 0);
+    printf("first_clus = 0x%x\n", first_clus);
+
+    u32 second_clus = bmap(ip, 1);
+    printf("second_clus = 0x%x\n", second_clus);
+}

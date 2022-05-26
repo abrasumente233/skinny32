@@ -12,6 +12,7 @@
 
 void test_ls();
 void test_open();
+void test_bmap();
 
 int main() {
     init_block_device();
@@ -20,6 +21,9 @@ int main() {
     init_fs(&fs);
 
     test_ls();
+    printf("-----------------\n");
     test_open();
+    printf("-----------------\n");
+    test_bmap();
     return 0;
 }

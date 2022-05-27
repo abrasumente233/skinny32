@@ -1,4 +1,2 @@
 main
-fs.img
-.vscode
-fs_bak.img
+*.img

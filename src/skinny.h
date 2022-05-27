@@ -105,6 +105,7 @@ typedef struct inode {
     u32 inum;
     u32 size;
     u32 type;
+    struct inode *parent;
 } inode;
 
 #define SCAN_BREAK 0

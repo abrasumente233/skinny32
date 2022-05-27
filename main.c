@@ -18,6 +18,7 @@ void test_readi();
 void test_dirent_alloc();
 void test_encode_sfn();
 void test_dirlink();
+void test_new_dir();
 
 int main() {
     init_block_device();
@@ -38,6 +39,8 @@ int main() {
     test_encode_sfn();
     printf("-----------------\n");
     test_dirlink();
+    printf("-----------------\n");
+    test_new_dir();
 
     release_block();
     return 0;

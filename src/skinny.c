@@ -12,6 +12,7 @@ static fat32 *ff;
 
 static u32 get_dir_size(struct inode *ip);
 static u32 encode_sfn(void *res, const char *name);
+void iupdate(struct inode *ip);
 
 #define CLUS2SEC(_CLUS_NO, _CLUS_OFF, _SEC_NO, _SEC_OFF)                       \
     do {                                                                       \
@@ -91,7 +92,11 @@ static fat32_dirent read_fat32_dirent(u32 inum) {
 }
 
 // Plug in your OS's favorite allocation scheme here.
-static inode *ialloc() { return malloc(sizeof(inode)); }
+static inode *ialloc() {
+    inode *ip = malloc(sizeof(inode));
+    memset(ip, 0, sizeof(inode));
+    return ip;
+}
 
 static void idalloc(inode *in) { free(in); }
 
@@ -105,6 +110,7 @@ static void idalloc(inode *in) { free(in); }
 static inode *iget(u32 dev, u32 inum) {
     inode *in = ialloc();
     in->inum = inum;
+    in->parent = NULL;
 
     if (inum != 0) {
         fat32_dirent entry = read_fat32_dirent(inum);
@@ -382,9 +388,9 @@ int writei(struct inode *ip, int user_src, void *src, u32 off, u32 n) {
     char buf[BSIZE];
 
     // FIXME: Check the bound
+    if (off > ip->size || off + n < off)
+        return -1;
     /*
-    if(off > ip->size || off + n < off)
-      return -1;
     if(off + n > MAXFILE*BSIZE)
       return -1;
     */
@@ -397,17 +403,22 @@ int writei(struct inode *ip, int user_src, void *src, u32 off, u32 n) {
         bwrite(buf, sec, 1);
     }
 
-    // FIXME: Set inode's size
-    /*
-    if(off > ip->size)
-      ip->size = off;
-    */
+    // Round ip->size up to the nearest BSIZE
+    // if ip->type == T_DIR
+    if (off > ip->size) {
+        if (ip->type == T_DIR) {
+            u32 size = get_dir_size(ip);
+            ip->size = (size + BSIZE - 1) & ~(BSIZE - 1);
+        } else {
+            ip->size = off;
+        }
+    }
 
     // FIXME: Write back inode.
     // write the i-node back to disk even if the size didn't change
     // because the loop above might have called bmap() and added a new
     // block to ip->addrs[].
-    // iupdate(ip);
+    iupdate(ip);
 
     return tot;
 }
@@ -513,8 +524,9 @@ static u32 dirent_alloc(inode *ip) {
     fat32_dirent *dent;
     u32 inum = 0, off = 0;
     u32 found = 0;
+    int i;
 
-    for (int i = 0; i < ip->size / sizeof(fat32_dirent); i++) {
+    for (i = 0; i < ip->size / sizeof(fat32_dirent); i++) {
         printf("i = %d\n", i);
         off = i * sizeof(fat32_dirent);
         readi(ip, 0, buf, off, sizeof(fat32_dirent), &inum);
@@ -534,7 +546,7 @@ static u32 dirent_alloc(inode *ip) {
 
     assert(found);
     printf("Allocated %d\n", inum);
-    if (dent->name[0] == 0x00) {
+    if (dent->name[0] == 0x00 && (i + 1) % 8 == 0) {
         bmap_alloc(ip, ip->size / BSIZE + 1);
         fat32_dirent last_entry = {0};
         writei(ip, 0, &last_entry, ip->size, sizeof(fat32_dirent));
@@ -636,6 +648,7 @@ static struct inode *namex(char *path, int nameiparent, char *name) {
         if ((next = fat_dirlookup(ip, name)) == 0) {
             return 0;
         }
+        next->parent = ip;
         ip = next;
     }
     if (nameiparent) {
@@ -798,15 +811,56 @@ static inode *dirlink(inode *dir, char *name, u32 inode_type) {
 
     u32 inum = dirent_alloc(dir);
 
-    fat32_dirent dirent = {
-        .attr = ((inode_type == T_DIR) ? ATTR_DIRECTORY : 0),
-    };
+    fat32_dirent dirent = {.attr = ((inode_type == T_DIR) ? ATTR_DIRECTORY : 0),
+                           .file_size = 0};
 
     encode_sfn(dirent.name, name);
 
     write_fat32_dirent(inum, &dirent);
 
-    return iget(0, inum);
+    inode *ip = iget(0, inum);
+
+    if (inode_type == T_DIR) {
+        // Add . and .. to the new directory
+        // Create . directory entry
+        u32 dot_clus = get_first_data_cluster(ip->inum);
+        char name[11] = ".          ";
+        fat32_dirent dot = {.attr = ATTR_DIRECTORY,
+                            .file_size = 0,
+                            .fat_clus_hi = (dot_clus >> 16) & 0xffff,
+                            .fat_clus_lo = dot_clus & 0xffff};
+        memcpy(dot.name, name, 11);
+        writei(ip, 0, &dot, 0, sizeof(fat32_dirent));
+
+        // Create .. directory entry
+        u32 dotdot_clus = get_first_data_cluster(dir->inum);
+        fat32_dirent dotdot = {.attr = ATTR_DIRECTORY,
+                               .file_size = 0,
+                               .fat_clus_hi = (dotdot_clus >> 16) & 0xffff,
+                               .fat_clus_lo = dotdot_clus & 0xffff};
+        memcpy(dotdot.name, name, 11);
+        dotdot.name[1] = '.';
+        writei(ip, 0, &dotdot, sizeof(fat32_dirent), sizeof(fat32_dirent));
+    }
+
+    return ip;
+}
+
+// Copy a modified in-memory inode to disk.
+// Must be called after every change to an ip->xxx field
+// that lives on disk.
+// Caller must hold ip->lock.
+void iupdate(struct inode *ip) {
+    if (ip->inum == 0) {
+        return;
+    }
+
+    fat32_dirent dirent = read_fat32_dirent(ip->inum);
+    dirent.attr = (ip->type == T_DIR) ? ATTR_DIRECTORY : 0;
+    if (ip->type != T_DIR) {
+        dirent.file_size = ip->size;
+    }
+    write_fat32_dirent(ip->inum, &dirent);
 }
 
 void test_dirent_alloc() {
@@ -839,14 +893,10 @@ void test_dirent_alloc() {
 #define NS_NONAME 0x80 /* Not followed */
 
 /* Test if the byte is DBC 1st byte */
-static int dbc_1st(u8 c) {
-    return 0; /* Always false */
-}
+static int dbc_1st(u8 c) { return 0; /* Always false */ }
 
 /* Test if the byte is DBC 2nd byte */
-static int dbc_2nd(u8 c) {
-    return 0; /* Always false */
-}
+static int dbc_2nd(u8 c) { return 0; /* Always false */ }
 
 static u32 encode_sfn(void *res, const char *name) {
     u8 c, d, *sfn;
@@ -899,9 +949,9 @@ static u32 encode_sfn(void *res, const char *name) {
     if (sfn[0] == DDEM)
         sfn[0] = RDDEM; /* If the first character collides with DDEM, replace it
                            with RDDEM */
-    //sfn[NSFLAG] = (c <= ' ' || p[si] <= ' ')
-                      //? NS_LAST
-                      //: 0; /* Set last segment flag if end of the path */
+    // sfn[NSFLAG] = (c <= ' ' || p[si] <= ' ')
+    //? NS_LAST
+    //: 0; /* Set last segment flag if end of the path */
 
     return 0;
 }
@@ -919,14 +969,38 @@ void test_dirlink() {
     assert(new_file);
     printf("new_file inum = 0x%x\n", new_file->inum);
     char data[] = "hello world\n";
-    
+
     printf("writing to new file\n");
     writei(new_file, 0, data, 0, strlen(data));
+
+    printf("new file size: %d\n", new_file->size);
 
     char buf[512];
     printf("reading from file\n");
     readi(new_file, 0, buf, 0, strlen(data), 0);
     buf[strlen(data)] = '\0';
     printf("read: %s\n", buf);
-    
+}
+
+void test_new_dir() {
+    inode *ip = get_root_inode();
+    inode *new_dir = dirlink(ip, "NEW_DIR", T_DIR);
+    assert(new_dir);
+
+    printf("new_dir inum = 0x%x\n", new_dir->inum);
+    printf("new_dir size: %d\n", new_dir->size);
+
+    // Try create new file in new_dir
+    inode *new_file = dirlink(new_dir, "HEY.TXT", T_FILE);
+    char data[] = "Don't go gentle into that good night\n";
+    printf("writing to new file\n");
+    writei(new_file, 0, data, 0, strlen(data));
+
+    printf("new file size: %d\n", new_file->size);
+
+    char buf[512];
+    printf("reading from file\n");
+    readi(new_file, 0, buf, 0, strlen(data), 0);
+    buf[strlen(data)] = '\0';
+    printf("read: %s\n", buf);
 }

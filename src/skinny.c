@@ -863,6 +863,39 @@ void iupdate(struct inode *ip) {
     write_fat32_dirent(ip->inum, &dirent);
 }
 
+// Truncate inode(discard contents)
+void itrunc(inode *ip) {
+    // TODO: Implement itrunc for T_DIR
+    assert(ip->type == T_FILE);
+
+    fat32_dirent dirent = read_fat32_dirent(ip->inum);
+
+    u32 clus = get_first_data_cluster(ip->inum);
+    if (clus == 0) {
+        // we have nothing to truncate
+        return;
+    }
+
+    fat_entry freed_entry = 0x0fffffff;
+
+    while (clus != 0) {
+        u32 entry = get_fat_entry(clus);
+        set_fat_entry(clus, freed_entry);
+        assert(entry != FE_FREE);
+        assert(entry != FE_BAD);
+        if (is_fat_entry_eoc(entry)) {
+            break;
+        }
+        clus = entry;
+    }
+
+    dirent.fat_clus_hi = dirent.fat_clus_lo = 0;
+    write_fat32_dirent(ip->inum, &dirent);
+
+    ip->size = 0;
+    iupdate(ip); 
+}
+
 void test_dirent_alloc() {
     inode *ip = get_root_inode();
     u32 inum = dirent_alloc(ip);
@@ -1003,4 +1036,13 @@ void test_new_dir() {
     readi(new_file, 0, buf, 0, strlen(data), 0);
     buf[strlen(data)] = '\0';
     printf("read: %s\n", buf);
+}
+
+void test_truncate() {
+    printf("truncate test\n");
+    inode *file = namei("/FILE8.TXT");
+    printf("before: file size = %d\n", file->size);
+    itrunc(file);
+    printf(" after: file size = %d\n", file->size);
+
 }

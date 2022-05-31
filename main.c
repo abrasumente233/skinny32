@@ -20,6 +20,8 @@ void test_encode_sfn();
 void test_dirlink();
 void test_new_dir();
 void test_truncate();
+void test_for_each_clus();
+void test_for_each_dirent();
 
 int main() {
     init_block_device();
@@ -44,6 +46,10 @@ int main() {
     test_new_dir();
     printf("-----------------\n");
     test_truncate();
+    printf("-----------------\n");
+    test_for_each_clus();
+    printf("-----------------\n");
+    test_for_each_dirent();
 
     release_block();
     return 0;

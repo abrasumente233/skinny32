@@ -507,9 +507,9 @@ inode *fat_dirlookup(inode *dir, char *name) {
         char filename[12];
         decode_fat_sfn(filename, dent);
 
-        printf("%s\n", filename);
+        // printf("%s\n", filename);
         if (strcmp(filename, name) == 0) {
-            printf("Found!\n");
+            // printf("Found!\n");
             return iget(0, inum);
         }
     }
@@ -893,7 +893,7 @@ void itrunc(inode *ip) {
     write_fat32_dirent(ip->inum, &dirent);
 
     ip->size = 0;
-    iupdate(ip); 
+    iupdate(ip);
 }
 
 void test_dirent_alloc() {
@@ -1044,5 +1044,68 @@ void test_truncate() {
     printf("before: file size = %d\n", file->size);
     itrunc(file);
     printf(" after: file size = %d\n", file->size);
+}
 
+#define FOR_EACH_CLUS(__inum, __clus, __ent, ...)                              \
+    do {                                                                       \
+        u32 first_clus = get_first_data_cluster(__inum);                       \
+        if (first_clus == 0)                                                   \
+            break;                                                             \
+                                                                               \
+        for (u32 __clus = first_clus, __ent;;) {                               \
+            __ent = get_fat_entry(clus);                                       \
+            __VA_ARGS__                                                        \
+            if (is_fat_entry_eoc(__ent))                                       \
+                break;                                                         \
+            __clus = __ent;                                                    \
+        }                                                                      \
+    } while (0)
+
+void test_for_each_clus() {
+    printf("for each clus test\n");
+    inode *file = namei("/FILE9.TXT");
+    // inode *file = get_root_inode();
+    if (file == NULL) {
+        printf("file not found\n");
+        return;
+    }
+
+    FOR_EACH_CLUS(file->inum, clus, ent, {
+        printf("clus = 0x%x\n", clus); // Why
+        printf("ent = 0x%x\n", ent);
+        u32 sec = clus_data_sector(clus);
+        printf("sec = 0x%x\n", sec * BSIZE);
+    });
+}
+
+// Must be used with a inode of type T_DIR
+#define FOR_EACH_DIRENT(__inum, __clus, __ent, __off, __dirent, ...)           \
+    do {                                                                       \
+        u8 buf[BSIZE];                                                         \
+        FOR_EACH_CLUS(__inum, __clus, __ent, {                                 \
+            bread(buf, clus_data_sector(__clus), 1);                           \
+            fat32_dirent *dents = (fat32_dirent *)buf;                         \
+            for (u32 i = 0; i < BSIZE / sizeof(fat32_dirent); i++) {           \
+                u32 __off = i * sizeof(fat32_dirent);                          \
+                fat32_dirent *__dirent = &dents[i];                            \
+                __VA_ARGS__                                                    \
+            }                                                                  \
+        });                                                                    \
+    } while (0)
+
+void test_for_each_dirent() {
+    inode *root = get_root_inode();
+    assert(root != NULL);
+
+    FOR_EACH_DIRENT(root->inum, clus, ent, off, dirent, {
+        u8 first_byte = dirent->name[0];
+        if (first_byte == 0xe5) {
+            continue;
+        } else if (first_byte == 0x00) {
+            break;
+        }
+        char name[12];
+        decode_fat_sfn(name, dirent);
+        printf("%s\n", name);
+    });
 }

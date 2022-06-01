@@ -10,11 +10,11 @@
 
 #define FOR_EACH_CLUS(__inum, __clus, __fat_ent, ...)                              \
     do {                                                                       \
-        u32 first_clus = get_first_data_cluster(__inum);                       \
-        if (first_clus == 0)                                                   \
+        u32 __first_clus = get_first_data_cluster(__inum);                       \
+        if (__first_clus == 0)                                                   \
             break;                                                             \
                                                                                \
-        for (u32 __clus = first_clus, __fat_ent;;) {                               \
+        for (u32 __clus = __first_clus, __fat_ent;;) {                               \
             __fat_ent = get_fat_entry(__clus);                                       \
             __VA_ARGS__                                                        \
             if (is_fat_entry_eoc(__fat_ent))                                       \
@@ -26,13 +26,13 @@
 // Must be used with a inode of type T_DIR
 #define FOR_EACH_DIRENT(__inum, __clus, __fat_ent, __off, __dirent, ...)           \
     do {                                                                       \
-        u8 buf[BSIZE];                                                         \
+        u8 __buf[BSIZE];                                                         \
         FOR_EACH_CLUS(__inum, __clus, __fat_ent, {                                 \
-            bread(buf, clus_data_sector(__clus), 1);                           \
-            fat32_dirent *dents = (fat32_dirent *)buf;                         \
-            for (u32 i = 0; i < BSIZE / sizeof(fat32_dirent); i++) {           \
-                u32 __off = i * sizeof(fat32_dirent);                          \
-                fat32_dirent *__dirent = &dents[i];                            \
+            bread(__buf, clus_data_sector(__clus), 1);                           \
+            fat32_dirent *dents = (fat32_dirent *)__buf;                         \
+            for (u32 __i = 0; __i < BSIZE / sizeof(fat32_dirent); __i++) {           \
+                u32 __off = __i * sizeof(fat32_dirent);                          \
+                fat32_dirent *__dirent = &dents[__i];                            \
                 __VA_ARGS__                                                    \
             }                                                                  \
         });                                                                    \
@@ -588,7 +588,7 @@ static u32 dirent_alloc(inode *ip) {
     assert(ip->type == T_DIR);
 
     u32 inum = 0;
-    int i;
+    int i = 0;
 
     FOR_EACH_DIRENT(ip->inum, clus, __fat_ent, off, dent, {
         printf("i = %d\n", i);

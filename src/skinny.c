@@ -8,10 +8,41 @@
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
+#define FOR_EACH_CLUS(__inum, __clus, __fat_ent, ...)                              \
+    do {                                                                       \
+        u32 first_clus = get_first_data_cluster(__inum);                       \
+        if (first_clus == 0)                                                   \
+            break;                                                             \
+                                                                               \
+        for (u32 __clus = first_clus, __fat_ent;;) {                               \
+            __fat_ent = get_fat_entry(__clus);                                       \
+            __VA_ARGS__                                                        \
+            if (is_fat_entry_eoc(__fat_ent))                                       \
+                break;                                                         \
+            __clus = __fat_ent;                                                    \
+        }                                                                      \
+    } while (0)
+
+// Must be used with a inode of type T_DIR
+#define FOR_EACH_DIRENT(__inum, __clus, __fat_ent, __off, __dirent, ...)           \
+    do {                                                                       \
+        u8 buf[BSIZE];                                                         \
+        FOR_EACH_CLUS(__inum, __clus, __fat_ent, {                                 \
+            bread(buf, clus_data_sector(__clus), 1);                           \
+            fat32_dirent *dents = (fat32_dirent *)buf;                         \
+            for (u32 i = 0; i < BSIZE / sizeof(fat32_dirent); i++) {           \
+                u32 __off = i * sizeof(fat32_dirent);                          \
+                fat32_dirent *__dirent = &dents[i];                            \
+                __VA_ARGS__                                                    \
+            }                                                                  \
+        });                                                                    \
+    } while (0)
+
+
 static fat32 *ff;
 
-static u32 get_dir_size(struct inode *ip);
-static u32 encode_sfn(void *res, const char *name);
+static u32 fat_dir_size(struct inode *ip);
+static u32 fat_encode_sfn(void *res, const char *name);
 void iupdate(struct inode *ip);
 
 #define CLUS2SEC(_CLUS_NO, _CLUS_OFF, _SEC_NO, _SEC_OFF)                       \
@@ -20,6 +51,49 @@ void iupdate(struct inode *ip);
                   (_CLUS_NO - 2) * ff->bpb.sec_per_clus + _CLUS_OFF / BSIZE;   \
         _SEC_OFF = _CLUS_OFF % BSIZE;                                          \
     } while (0)
+
+static u32 clus_data_sector(u32 clus_no) {
+    return ff->rootdir_base_sec + (clus_no - 2) * ff->bpb.sec_per_clus;
+}
+
+static u32 sec_to_clus(u32 sec) {
+    return (sec - ff->rootdir_base_sec) / ff->bpb.sec_per_clus + 2;
+}
+
+static fat_entry get_fat_entry(u32 clus_no) {
+    u32 fat_offset = clus_no * 4;
+    u32 fat_off_sec = ff->bpb.rsvd_sec_cnt + (fat_offset / BSIZE);
+    u32 fat_entry_off = fat_offset % BSIZE;
+
+    u8 buf[BSIZE];
+    bread(buf, fat_off_sec, 1);
+
+    fat_entry fe = *((fat_entry *)(buf + fat_entry_off));
+    return fe;
+}
+
+// TODO: Performance stonks!
+static void set_fat_entry(u32 clus_no, fat_entry entry) {
+    u32 fat_offset = clus_no * 4;
+    u32 fat_off_sec = ff->bpb.rsvd_sec_cnt + (fat_offset / BSIZE);
+    u32 fat_entry_off = fat_offset % BSIZE;
+
+    u8 buf[BSIZE];
+    bread(buf, fat_off_sec, 1);
+
+    *((fat_entry *)(buf + fat_entry_off)) = entry;
+
+    bwrite(buf, fat_off_sec, 1);
+}
+
+static int is_fat_entry_eoc(fat_entry fe) {
+    return fe >= 0x0ffffff8 && fe <= 0x0fffffff;
+}
+
+// Returns non-zero if this file is a directory.
+static inline int is_dirent_dir(fat32_dirent *dent) {
+    return (dent->attr & ATTR_DIRECTORY);
+}
 
 static void read_bpb(fat32 *fs) {
     fat32_bpb *bpb = &fs->bpb;
@@ -91,6 +165,22 @@ static fat32_dirent read_fat32_dirent(u32 inum) {
     return *dent;
 }
 
+static void write_fat32_dirent(u32 inum, fat32_dirent *dirent) {
+    assert(inum != 0);
+
+    u32 clus = inum >> 12;
+    u32 off = inum & 0xfff;
+
+    u32 sec = clus_data_sector(clus);
+
+    char buf[BSIZE];
+    bread(buf, sec, 1);
+    fat32_dirent *d = (fat32_dirent *)(buf + off);
+
+    *d = *dirent;
+    bwrite(buf, sec, 1);
+}
+
 // Plug in your OS's favorite allocation scheme here.
 static inode *ialloc() {
     inode *ip = malloc(sizeof(inode));
@@ -121,7 +211,7 @@ static inode *iget(u32 dev, u32 inum) {
     }
 
     if (in->type == T_DIR) {
-        in->size = get_dir_size(in);
+        in->size = fat_dir_size(in);
     }
 
     return in;
@@ -170,44 +260,6 @@ static u32 get_first_data_cluster(u32 inum) {
     return fat_clus;
 }
 
-static u32 clus_data_sector(u32 clus_no) {
-    return ff->rootdir_base_sec + (clus_no - 2) * ff->bpb.sec_per_clus;
-}
-
-static u32 sec_to_clus(u32 sec) {
-    return (sec - ff->rootdir_base_sec) / ff->bpb.sec_per_clus + 2;
-}
-
-static fat_entry get_fat_entry(u32 clus_no) {
-    u32 fat_offset = clus_no * 4;
-    u32 fat_off_sec = ff->bpb.rsvd_sec_cnt + (fat_offset / BSIZE);
-    u32 fat_entry_off = fat_offset % BSIZE;
-
-    u8 buf[BSIZE];
-    bread(buf, fat_off_sec, 1);
-
-    fat_entry fe = *((fat_entry *)(buf + fat_entry_off));
-    return fe;
-}
-
-// TODO: Performance stonks!
-static void set_fat_entry(u32 clus_no, fat_entry entry) {
-    u32 fat_offset = clus_no * 4;
-    u32 fat_off_sec = ff->bpb.rsvd_sec_cnt + (fat_offset / BSIZE);
-    u32 fat_entry_off = fat_offset % BSIZE;
-
-    u8 buf[BSIZE];
-    bread(buf, fat_off_sec, 1);
-
-    *((fat_entry *)(buf + fat_entry_off)) = entry;
-
-    bwrite(buf, fat_off_sec, 1);
-}
-
-static int is_fat_entry_eoc(fat_entry fe) {
-    return fe >= 0x0ffffff8 && fe <= 0x0fffffff;
-}
-
 // Allocate a new cluster and return its cluster number.
 static u32 balloc() {
     // TODO: Optimize balloc using FSINFO
@@ -242,22 +294,6 @@ static u32 balloc() {
     return 0; // No free clusters found
 }
 
-static void write_fat32_dirent(u32 inum, fat32_dirent *dirent) {
-    assert(inum != 0);
-
-    u32 clus = inum >> 12;
-    u32 off = inum & 0xfff;
-
-    u32 sec = clus_data_sector(clus);
-
-    char buf[BSIZE];
-    bread(buf, sec, 1);
-    fat32_dirent *d = (fat32_dirent *)(buf + off);
-
-    *d = *dirent;
-    bwrite(buf, sec, 1);
-}
-
 // Returns the sector number of the nth block
 // in inode ip.
 //
@@ -290,27 +326,35 @@ static u32 bmap(inode *ip, u32 bn, int alloc) {
         }
     }
 
-    while (bn--) {
-        u32 entry = get_fat_entry(clus);
-        assert(entry != FE_FREE);
-        assert(entry != FE_BAD);
-        if (is_fat_entry_eoc(entry)) {
+    int curr = 0;
+    u32 res_clus = 0;
+    FOR_EACH_CLUS(ip->inum, clus, fat_ent, {
+        assert(fat_ent != FE_FREE);
+        assert(fat_ent != FE_BAD);
+
+        res_clus = clus;
+        if (curr == bn) {
+            break;
+        }
+
+        if (is_fat_entry_eoc(fat_ent)) {
             // allocate a new cluster
             // set the fat entry to be this clus
             // and assign it to clus.
             if (alloc) {
                 u32 new_clus = balloc();
                 set_fat_entry(clus, new_clus);
-                clus = new_clus;
+                
+                // NOTE: Make the macro continue the loop
+                fat_ent = new_clus;
             } else {
                 return 0;
             }
-        } else { // is a valid cluster in the middle of chain
-            clus = entry;
         }
-    }
+        curr += 1;
+    });
 
-    u32 sec = clus_data_sector(clus);
+    u32 sec = clus_data_sector(res_clus);
 
     // Cache the nth block -> sector mapping
     // ip->bn = bn;
@@ -323,25 +367,114 @@ static u32 bmap_noalloc(inode *ip, u32 bn) { return bmap(ip, bn, 0); }
 
 static u32 bmap_alloc(inode *ip, u32 bn) { return bmap(ip, bn, 1); }
 
-static u32 get_dir_size(struct inode *ip) {
+static u32 fat_dir_size(struct inode *ip) {
     assert(ip);
     assert(ip->type == T_DIR);
 
-    u32 clus = get_first_data_cluster(ip->inum);
     u32 size = 0;
 
-    while (clus != 0) {
-        u32 entry = get_fat_entry(clus);
-        assert(entry != FE_FREE);
-        assert(entry != FE_BAD);
+    FOR_EACH_CLUS(ip->inum, __clus, fat_ent, {
+        assert(fat_ent != FE_FREE);
+        assert(fat_ent != FE_BAD);
         size += BSIZE;
-        clus = entry;
-        if (is_fat_entry_eoc(entry)) {
-            break;
-        }
-    }
+    });
 
     return size;
+}
+
+static void fat_decode_sfn(char *name, fat32_dirent *dent) {
+    int si = 0, di = 0;
+    while (si < 11) {
+        char c = dent->name[si++];
+        if (c == ' ')
+            continue;
+        if (c == 0x05)
+            c = 0xe5; // Restore replaced DDEM character
+        if (si == 9)
+            name[di++] = '.';
+        name[di++] = c;
+    }
+    name[di] = 0;
+}
+
+#define IsSeparator(c) ((c) == '/' || (c) == '\\')
+#define IsUpper(c) ((c) >= 'A' && (c) <= 'Z')
+#define IsLower(c) ((c) >= 'a' && (c) <= 'z')
+
+#define DDEM 0xE5  /* Deleted directory entry mark set to DIR_Name[0] */
+#define RDDEM 0x05 /* Replacement of the character collides with DDEM */
+#define NSFLAG 11
+#define NS_LOSS 0x01   /* Out of 8.3 format */
+#define NS_LFN 0x02    /* Force to create LFN entry */
+#define NS_LAST 0x04   /* Last segment */
+#define NS_BODY 0x08   /* Lower case flag (body) */
+#define NS_EXT 0x10    /* Lower case flag (ext) */
+#define NS_DOT 0x20    /* Dot entry */
+#define NS_NOLFN 0x40  /* Do not find LFN */
+#define NS_NONAME 0x80 /* Not followed */
+
+/* Test if the byte is DBC 1st byte */
+static int dbc_1st(u8 c) { return 0; /* Always false */ }
+
+/* Test if the byte is DBC 2nd byte */
+static int dbc_2nd(u8 c) { return 0; /* Always false */ }
+
+static u32 fat_encode_sfn(void *res, const char *name) {
+    u8 c, d, *sfn;
+    u32 ni, si, i;
+    const char *p;
+
+    /* Create file name in directory form */
+    p = name;
+    sfn = res;
+    memset(sfn, ' ', 11);
+    si = i = 0;
+    ni = 8;
+    for (;;) {
+        c = (u32)p[si++]; /* Get a byte */
+        if (c <= ' ')
+            break;            /* Break if end of the path name */
+        if (IsSeparator(c)) { /* Break if a separator is found */
+            while (IsSeparator(p[si]))
+                si++; /* Skip duplicated separator if exist */
+            break;
+        }
+        if (c == '.' || i >= ni) { /* End of body or field overflow? */
+            if (ni == 11 || c != '.')
+                return -1;
+            i = 8;
+            ni = 11; /* Enter file extension field */
+            continue;
+        }
+        if (c >= 0x80) { /* Is SBC extended character? */
+            assert(0 && "SBC extended character not supported");
+            // c = ExCvt[c & 0x7F]; /* To upper SBC extended character */
+        }
+        if (dbc_1st(c)) {     /* Check if it is a DBC 1st byte */
+            d = (u32)p[si++]; /* Get 2nd byte */
+            if (!dbc_2nd(d) || i >= ni - 1)
+                return -1;
+            sfn[i++] = c;
+            sfn[i++] = d;
+        } else { /* SBC */
+            if (strchr("*+,:;<=>[]|\"\?\x7F", (int)c))
+                return -1;
+            if (IsLower(c))
+                c -= 0x20; /* To upper */
+            sfn[i++] = c;
+        }
+    }
+    if (i == 0)
+        return -1; /* Reject nul string */
+
+    if (sfn[0] == DDEM)
+        sfn[0] = RDDEM; /* If the first character collides with DDEM, replace it
+                           with RDDEM */
+    // sfn[NSFLAG] = (c <= ' ' || p[si] <= ' ')
+    //? NS_LAST
+    //: 0; /* Set last segment flag if end of the path */
+
+    return 0;
 }
 
 // Read data from inode.
@@ -353,12 +486,12 @@ int readi(struct inode *ip, int user_dst, void *dst, u32 off, u32 n,
     u32 tot, m;
     char buf[BSIZE];
 
-    /*
+    
     if(off > ip->size || off + n < off)
       return 0;
     if(off + n > ip->size)
       n = ip->size - off;
-  */
+  
     u32 inum_written = 0;
 
     for (tot = 0; tot < n; tot += m, off += m, dst += m) {
@@ -407,7 +540,7 @@ int writei(struct inode *ip, int user_src, void *src, u32 off, u32 n) {
     // if ip->type == T_DIR
     if (off > ip->size) {
         if (ip->type == T_DIR) {
-            u32 size = get_dir_size(ip);
+            u32 size = fat_dir_size(ip);
             ip->size = (size + BSIZE - 1) & ~(BSIZE - 1);
         } else {
             ip->size = off;
@@ -423,96 +556,30 @@ int writei(struct inode *ip, int user_src, void *src, u32 off, u32 n) {
     return tot;
 }
 
-// Returns 0 if clus_no is a EOC.
-// Returns a valid cluster number if not
-// Oh if the ent is 0... you wont get a zero if you're a good citizen
-static u32 next_in_chain(u32 clus_no) {
-    fat_entry ent = get_fat_entry(clus_no);
-    assert(ent != 0);
-
-    if (is_fat_entry_eoc(ent)) {
-        return 0;
-    } else {
-        return ent;
-    }
-}
-
-static void scandir(inode *ip, scan_fn fn, void *res) {
-    u32 fat_entry_sec, fat_entry_off;
-    u32 first_clus = get_first_data_cluster(ip->inum);
-
-    // Now we arrive at the data region
-    for (u32 clus = first_clus; clus; clus = next_in_chain(clus)) {
-        u32 sec = ff->rootdir_base_sec + (clus - 2) * ff->bpb.sec_per_clus;
-
-        // Note that we assume in read_bpb sectors per cluster is one.
-        // Haha, Lazy.
-        u8 buf[BSIZE];
-        bread(buf, sec, 1);
-        fat32_dirent *dents = (fat32_dirent *)buf;
-        for (int i = 0; i < BSIZE / sizeof(fat32_dirent); i++) {
-            fat32_dirent *dent = dents + i;
-            if ((u8)dent->name[0] == 0x00) {
-                // Directory entry is free, and there's no dirents
-                // following this entry anymore, stop getting dirents.
-                goto scan_done;
-            }
-            int scan_res = fn(clus, i * sizeof(fat32_dirent), dent, res);
-            if (scan_res == SCAN_BREAK) {
-                goto scan_done;
-            }
-        }
-    }
-scan_done:;
-}
-
-typedef struct {
-    char *name;
-    u32 clus_no;
-    u32 off;
-    fat32_dirent dent;
-} search_result;
-
-static void decode_fat_sfn(char *name, fat32_dirent *dent) {
-    int si = 0, di = 0;
-    while (si < 11) {
-        char c = dent->name[si++];
-        if (c == ' ')
-            continue;
-        if (c == 0x05)
-            c = 0xe5; // Restore replaced DDEM character
-        if (si == 9)
-            name[di++] = '.';
-        name[di++] = c;
-    }
-    name[di] = 0;
-}
-
 inode *fat_dirlookup(inode *dir, char *name) {
     assert(dir->type == T_DIR);
-    u32 inum;
-    char buf[sizeof(fat32_dirent)];
 
-    for (int i = 0; i < dir->size; i += sizeof(fat32_dirent)) {
-        u32 inum;
-        int nread = readi(dir, 0, buf, i, sizeof(fat32_dirent), &inum);
-        assert(nread == sizeof(fat32_dirent));
-        fat32_dirent *dent = (fat32_dirent *)buf;
+    FOR_EACH_DIRENT(dir->inum, clus, __fat_ent, off, dent, {
+        u32 inum = (clus << 12) | off;
+        u8 first_byte = dent->name[0];
 
-        if ((u8)dent->name[0] == 0xe5) {
+        if (first_byte == 0xe5) {
             // Directory entry is free, skip this one
             continue;
+        } else if (first_byte == 0x00) {
+            // End of directory
+            return NULL;
         }
 
         char filename[12];
-        decode_fat_sfn(filename, dent);
+        fat_decode_sfn(filename, dent);
 
         // printf("%s\n", filename);
         if (strcmp(filename, name) == 0) {
             // printf("Found!\n");
             return iget(0, inum);
         }
-    }
+    });
 
     return NULL;
 }
@@ -520,67 +587,36 @@ inode *fat_dirlookup(inode *dir, char *name) {
 static u32 dirent_alloc(inode *ip) {
     assert(ip->type == T_DIR);
 
-    char buf[sizeof(fat32_dirent)];
-    fat32_dirent *dent;
-    u32 inum = 0, off = 0;
-    u32 found = 0;
+    u32 inum = 0;
     int i;
 
-    for (i = 0; i < ip->size / sizeof(fat32_dirent); i++) {
+    FOR_EACH_DIRENT(ip->inum, clus, __fat_ent, off, dent, {
         printf("i = %d\n", i);
-        off = i * sizeof(fat32_dirent);
-        readi(ip, 0, buf, off, sizeof(fat32_dirent), &inum);
-        dent = (fat32_dirent *)buf;
+        inum = (clus << 12) | off;
+        u8 first_byte = dent->name[0];
 
-        if ((u8)dent->name[0] == 0xe5) {
-            // Directory entry is free, skip this one
-            found = 1;
-            break;
-        } else if ((u8)dent->name[0] == 0x00) {
-            // Directory entry is free, and there's no dirents
-            // following this entry anymore, stop getting dirents.
-            found = 1;
-            break;
+        if (first_byte == 0xe5 || first_byte == 0x00) {
+            printf("Allocated %d\n", inum);
+            
+            // Performance: Don't use bmap here.
+            // Since we already know the current cluster,
+            // we don't need bmap to traverse the FAT again.
+            if (dent->name[0] == 0x00 && (i + 1) % 8 == 0) {
+                bmap_alloc(ip, ip->size / BSIZE + 1);
+                fat32_dirent last_entry = {0};
+                writei(ip, 0, &last_entry, ip->size, sizeof(fat32_dirent));
+            }
+
+            return inum;
         }
-    }
 
-    assert(found);
-    printf("Allocated %d\n", inum);
-    if (dent->name[0] == 0x00 && (i + 1) % 8 == 0) {
-        bmap_alloc(ip, ip->size / BSIZE + 1);
-        fat32_dirent last_entry = {0};
-        writei(ip, 0, &last_entry, ip->size, sizeof(fat32_dirent));
-    }
+        i += 1;
+    });
 
-    return inum;
+    assert(0 && "Panic");
+
+    return 0;
 }
-
-// Returns non-zero if this file is a directory.
-static inline int is_dirent_dir(fat32_dirent *dent) {
-    return (dent->attr & ATTR_DIRECTORY);
-}
-
-/*
-static void get_fileinfo(linux_dirent64 *ldent, fat32_dirent *dent) {
-    ldent->d_ino = 44;
-    ldent->d_off = 44;
-    ldent->d_reclen = sizeof(linux_dirent64);
-    ldent->d_type = is_dirent_dir(dent) ? DT_DIR : DT_REG;
-
-    int si = 0, di = 0;
-    while (si < 11) {
-        char c = dent->name[si++];
-        if (c == ' ')
-            continue;
-        if (c == 0x05)
-            c = 0xe5; // Restore replaced DDEM character
-        if (si == 9)
-            ldent->d_name[di++] = '.';
-        ldent->d_name[di++] = c;
-    }
-    ldent->d_name[di] = 0; // Terminate the SFN
-}
-*/
 
 // Paths
 
@@ -666,68 +702,6 @@ struct inode *nameiparent(char *path, char *name) {
     return namex(path, 1, name);
 }
 
-/*
-fat32_dirent find_dirent_by_name(const char *name) {
-    fat32_dirent *dirent;
-}
-
-static int file_open(fat32_dir *dir, fat32_file *f, const char *name) {
-    char buf[1024];
-
-    // Cleanup: There's a lot of directory traversing code,
-    // find a way to reuse it.
-    while (1) {
-        isize nread = getdents(-1, buf, 1024);
-        if (nread == -1) break;
-        for (long bpos = 0; bpos < nread;) {
-            linux_dirent64 *d = (linux_dirent64 *)(buf + bpos);
-            printf("%8llu  ", d->d_ino);
-            u8 d_type = d->d_type;
-            if (strcmp(name, d->d_name) == 0) {
-
-            }
-            bpos += d->d_reclen;
-        }
-    }
-
-    return -1;
-}
-*/
-
-// TODO: Make it able to read large directories
-/*
-isize getdents(int fd, void *dirp, usize count) {
-    u32 sec = ff->rootdir_base_sec;
-    fat32_dirent *dir_content = bread(sec);
-    linux_dirent64 *ldirp = dirp;
-
-    int read = 0;
-    // FIXME: We only read one sector of dirents for now!
-    for (int i = 0; read + sizeof(linux_dirent64) < count &&
-                    i < 512 / sizeof(fat32_dirent);
-         i++) {
-
-        fat32_dirent *dent = &dir_content[i];
-
-        if ((u8)dent->name[0] == 0xe5) {
-            // Directory entry is free, skip this one
-            continue;
-        } else if ((u8)dent->name[0] == 0x00) {
-            // Directory entry is free, and there's no dirents
-            // following this entry anymore, stop getting dirents.
-            break;
-        } else {
-            get_fileinfo(ldirp, dent);
-            printf("d_name = %s\n", ldirp->d_name);
-            ldirp++;
-            read += sizeof(linux_dirent64);
-        }
-    }
-
-    return read;
-}
-*/
-
 void test_open() {
     // inode *ip = fat_dirlookup(get_root_inode(), "README.TXT");
     // inode *ip = namei("/README.TXT");
@@ -745,22 +719,6 @@ void test_open() {
     assert(ip);
     printf("size：%d\n", ip->size);
 }
-
-static int print_dirent(u32 clus_no, u32 offset, fat32_dirent *dent,
-                        void *res) {
-    if ((u8)dent->name[0] == 0xe5) {
-        // Directory entry is free, skip this one
-        return SCAN_CONT;
-    }
-
-    char name[12];
-    decode_fat_sfn(name, dent);
-    printf("%s\n", name);
-
-    return SCAN_CONT;
-}
-
-void test_ls() { scandir(get_root_inode(), print_dirent, 0); }
 
 void test_bmap() {
     inode *ip = get_root_inode();
@@ -799,7 +757,7 @@ void test_readi() {
             break;
         } else {
             char name[12];
-            decode_fat_sfn(name, dent);
+            fat_decode_sfn(name, dent);
             printf("%s\n", name);
         }
     }
@@ -814,7 +772,7 @@ static inode *dirlink(inode *dir, char *name, u32 inode_type) {
     fat32_dirent dirent = {.attr = ((inode_type == T_DIR) ? ATTR_DIRECTORY : 0),
                            .file_size = 0};
 
-    encode_sfn(dirent.name, name);
+    fat_encode_sfn(dirent.name, name);
 
     write_fat32_dirent(inum, &dirent);
 
@@ -909,89 +867,10 @@ void test_dirent_alloc() {
     printf("off = %d\n", off);
 }
 
-#define IsSeparator(c) ((c) == '/' || (c) == '\\')
-#define IsUpper(c) ((c) >= 'A' && (c) <= 'Z')
-#define IsLower(c) ((c) >= 'a' && (c) <= 'z')
-
-#define DDEM 0xE5  /* Deleted directory entry mark set to DIR_Name[0] */
-#define RDDEM 0x05 /* Replacement of the character collides with DDEM */
-#define NSFLAG 11
-#define NS_LOSS 0x01   /* Out of 8.3 format */
-#define NS_LFN 0x02    /* Force to create LFN entry */
-#define NS_LAST 0x04   /* Last segment */
-#define NS_BODY 0x08   /* Lower case flag (body) */
-#define NS_EXT 0x10    /* Lower case flag (ext) */
-#define NS_DOT 0x20    /* Dot entry */
-#define NS_NOLFN 0x40  /* Do not find LFN */
-#define NS_NONAME 0x80 /* Not followed */
-
-/* Test if the byte is DBC 1st byte */
-static int dbc_1st(u8 c) { return 0; /* Always false */ }
-
-/* Test if the byte is DBC 2nd byte */
-static int dbc_2nd(u8 c) { return 0; /* Always false */ }
-
-static u32 encode_sfn(void *res, const char *name) {
-    u8 c, d, *sfn;
-    u32 ni, si, i;
-    const char *p;
-
-    /* Create file name in directory form */
-    p = name;
-    sfn = res;
-    memset(sfn, ' ', 11);
-    si = i = 0;
-    ni = 8;
-    for (;;) {
-        c = (u32)p[si++]; /* Get a byte */
-        if (c <= ' ')
-            break;            /* Break if end of the path name */
-        if (IsSeparator(c)) { /* Break if a separator is found */
-            while (IsSeparator(p[si]))
-                si++; /* Skip duplicated separator if exist */
-            break;
-        }
-        if (c == '.' || i >= ni) { /* End of body or field overflow? */
-            if (ni == 11 || c != '.')
-                return -1;
-            i = 8;
-            ni = 11; /* Enter file extension field */
-            continue;
-        }
-        if (c >= 0x80) { /* Is SBC extended character? */
-            assert(0 && "SBC extended character not supported");
-            // c = ExCvt[c & 0x7F]; /* To upper SBC extended character */
-        }
-        if (dbc_1st(c)) {     /* Check if it is a DBC 1st byte */
-            d = (u32)p[si++]; /* Get 2nd byte */
-            if (!dbc_2nd(d) || i >= ni - 1)
-                return -1;
-            sfn[i++] = c;
-            sfn[i++] = d;
-        } else { /* SBC */
-            if (strchr("*+,:;<=>[]|\"\?\x7F", (int)c))
-                return -1;
-            if (IsLower(c))
-                c -= 0x20; /* To upper */
-            sfn[i++] = c;
-        }
-    }
-    if (i == 0)
-        return -1; /* Reject nul string */
-
-    if (sfn[0] == DDEM)
-        sfn[0] = RDDEM; /* If the first character collides with DDEM, replace it
-                           with RDDEM */
-    // sfn[NSFLAG] = (c <= ' ' || p[si] <= ' ')
-    //? NS_LAST
-    //: 0; /* Set last segment flag if end of the path */
-
-    return 0;
-}
 
 void test_encode_sfn() {
     char name[12];
-    u32 ret = encode_sfn(name, "hello.txt");
+    u32 ret = fat_encode_sfn(name, "hello.txt");
     assert(ret == 0);
     printf("name = %s\n", name);
 }
@@ -1046,21 +925,6 @@ void test_truncate() {
     printf(" after: file size = %d\n", file->size);
 }
 
-#define FOR_EACH_CLUS(__inum, __clus, __ent, ...)                              \
-    do {                                                                       \
-        u32 first_clus = get_first_data_cluster(__inum);                       \
-        if (first_clus == 0)                                                   \
-            break;                                                             \
-                                                                               \
-        for (u32 __clus = first_clus, __ent;;) {                               \
-            __ent = get_fat_entry(clus);                                       \
-            __VA_ARGS__                                                        \
-            if (is_fat_entry_eoc(__ent))                                       \
-                break;                                                         \
-            __clus = __ent;                                                    \
-        }                                                                      \
-    } while (0)
-
 void test_for_each_clus() {
     printf("for each clus test\n");
     inode *file = namei("/FILE9.TXT");
@@ -1078,22 +942,7 @@ void test_for_each_clus() {
     });
 }
 
-// Must be used with a inode of type T_DIR
-#define FOR_EACH_DIRENT(__inum, __clus, __ent, __off, __dirent, ...)           \
-    do {                                                                       \
-        u8 buf[BSIZE];                                                         \
-        FOR_EACH_CLUS(__inum, __clus, __ent, {                                 \
-            bread(buf, clus_data_sector(__clus), 1);                           \
-            fat32_dirent *dents = (fat32_dirent *)buf;                         \
-            for (u32 i = 0; i < BSIZE / sizeof(fat32_dirent); i++) {           \
-                u32 __off = i * sizeof(fat32_dirent);                          \
-                fat32_dirent *__dirent = &dents[i];                            \
-                __VA_ARGS__                                                    \
-            }                                                                  \
-        });                                                                    \
-    } while (0)
-
-void test_for_each_dirent() {
+void test_ls() {
     inode *root = get_root_inode();
     assert(root != NULL);
 
@@ -1105,7 +954,7 @@ void test_for_each_dirent() {
             break;
         }
         char name[12];
-        decode_fat_sfn(name, dirent);
+        fat_decode_sfn(name, dirent);
         printf("%s\n", name);
     });
 }

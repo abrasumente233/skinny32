@@ -49,7 +49,7 @@ int main() {
     printf("-----------------\n");
     test_for_each_clus();
     printf("-----------------\n");
-    test_for_each_dirent();
+    test_ls();
 
     release_block();
     return 0;
